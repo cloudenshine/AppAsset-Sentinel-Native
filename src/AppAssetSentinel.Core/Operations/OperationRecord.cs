@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using AppAssetSentinel.Core.Adapters;
 
 namespace AppAssetSentinel.Core.Operations;
 
@@ -88,6 +89,11 @@ public sealed class OperationRecord
     [JsonPropertyName("state")]
     [JsonConverter(typeof(JsonStringEnumConverter))]
     public OperationState State { get; set; } = OperationState.Planned;
+
+    /// <summary>AUDIT W08: which mechanism actually moved the data.</summary>
+    [JsonPropertyName("mechanism")]
+    [JsonConverter(typeof(JsonStringEnumConverter))]
+    public RelocationMechanism Mechanism { get; set; } = RelocationMechanism.JunctionCompat;
 
     [JsonPropertyName("backup_disposition")]
     [JsonConverter(typeof(JsonStringEnumConverter))]

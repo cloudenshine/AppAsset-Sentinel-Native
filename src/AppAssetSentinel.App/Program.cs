@@ -12,6 +12,7 @@ using AppAssetSentinel.Core.Scanner;
 using AppAssetSentinel.Core.Semantic;
 using AppAssetSentinel.Core.Shield;
 using AppAssetSentinel.Core.Migration;
+using AppAssetSentinel.Core.Adapters;
 using AppAssetSentinel.Core.Operations;
 using AppAssetSentinel.Core.Policy;
 using AppAssetSentinel.Core.Safety;
@@ -451,6 +452,35 @@ public class Program
             });
 
             return Results.Ok(result.Outcome);
+        });
+
+        // -------------------------------------------------------------
+        // AUDIT W08: the first production adapter. Discovery and the service probe are
+        // strictly read-only; the response states the mechanism that would be used and
+        // whether the required acceptance environment is present.
+        // -------------------------------------------------------------
+        app.MapGet("/api/adapters/ollama", () =>
+        {
+            var instance = OllamaAdapter.Discover();
+            var (mechanism, reason) = OllamaAdapter.ChooseMechanism(instance);
+
+            return Results.Ok(new
+            {
+                instance,
+                mechanism = mechanism.ToString(),
+                mechanism_reason = reason,
+                relocation_enabled = _policy.AllowsMutation(Capability.VaultRelocate),
+                // Never claim a verified migration without a real, isolated run.
+                acceptance = new
+                {
+                    discovery = "performed_read_only",
+                    service_probe = instance.ServiceRunning ? "reachable" : "unreachable",
+                    config_redirect_switch = "unit_verified_in_temp_tree",
+                    cross_volume_run = "not_run",
+                    real_app_restart_inference = "not_run",
+                    note = "跨卷迁移与真实应用重启推理验收需要隔离账户与两个测试卷，尚未执行。"
+                }
+            });
         });
 
         app.MapGet("/api/vault/watchdog", () => Results.Ok(DriftWatchdog.InspectAndAuditDrifts(_policy)));

@@ -1,3 +1,5 @@
+using AppAssetSentinel.Core.Abstractions;
+using AppAssetSentinel.Core.Adapters;
 using AppAssetSentinel.Core.Migration;
 using AppAssetSentinel.Core.Policy;
 using AppAssetSentinel.Core.Scanner;
@@ -17,6 +19,22 @@ public sealed class MigrationRequest
 
     /// <summary>Set by the caller; reused verbatim so a retry is idempotent (AUDIT W06).</summary>
     public string TaskId { get; init; } = "task_" + Guid.NewGuid().ToString("N")[..12];
+
+    /// <summary>
+    /// AUDIT W08: official configuration is the preferred mechanism. Filesystem redirection is
+    /// a compatibility fallback that hides the truth from the application and can be severed by
+    /// its own updater, so it must be an explicit, evaluated choice rather than the default.
+    /// </summary>
+    public RelocationMechanism Mechanism { get; init; } = RelocationMechanism.JunctionCompat;
+
+    /// <summary>Environment variable this application reads for its data location, if any.</summary>
+    public string ConfigVariable { get; init; } = string.Empty;
+
+    /// <summary>Injected so tests never write the real user environment (AUDIT A09/W02).</summary>
+    public IEnvironmentStore? EnvironmentStore { get; init; }
+
+    /// <summary>Optional post-switch health probe. Return false to trigger rollback.</summary>
+    public Func<bool>? HealthCheck { get; init; }
 }
 
 public sealed class MigrationKernelResult
@@ -160,9 +178,43 @@ public static class MigrationKernel
                 };
             }
 
+            record.Mechanism = request.Mechanism;
+            record.ConfigVariable = request.ConfigVariable;
+
             record.ExpectedFileCount = sourceManifest.Files.Count;
             record.ExpectedTotalBytes = sourceManifest.TotalBytes;
             record.ExpectedManifestComplete = sourceManifest.Complete;
+
+            // The chosen mechanism's preconditions must hold BEFORE anything moves.
+            if (request.Mechanism == RelocationMechanism.OfficialConfig &&
+                string.IsNullOrWhiteSpace(request.ConfigVariable))
+            {
+                record.State = OperationState.PreflightFailed;
+                record.AddStep("preflight", "选择了官方配置机制，但未提供配置变量。");
+                log.Save(record);
+
+                return new MigrationKernelResult
+                {
+                    Outcome = OperationOutcome.Failed(Capability.VaultRelocate, "missing_config_variable",
+                        "官方配置机制需要 config_variable；未做任何修改。"),
+                    Record = record
+                };
+            }
+
+            if (request.Mechanism == RelocationMechanism.Unsupported)
+            {
+                record.State = OperationState.PreflightFailed;
+                record.AddStep("preflight", "该应用没有受支持的迁移机制。");
+                log.Save(record);
+
+                return new MigrationKernelResult
+                {
+                    Outcome = OperationOutcome.Unsupported(Capability.VaultRelocate,
+                        "该应用没有受支持的迁移机制，未做任何修改。"),
+                    Record = record
+                };
+            }
+
             log.Save(record);
 
             // ---------------------------------------------------------
@@ -314,6 +366,91 @@ public static class MigrationKernel
 
             // ---------------------------------------------------------
             // 5. Switch: park the source, then re-link the anchor
+            // ---------------------------------------------------------
+            if (request.Mechanism == RelocationMechanism.OfficialConfig)
+            {
+                // ---------------------------------------------------------
+                // 5a. Preferred switch: change the application's own configuration.
+                //     The application then genuinely knows where its data is.
+                // ---------------------------------------------------------
+                // Preconditions were already enforced in preflight; reaching here means they hold.
+                var envStore = request.EnvironmentStore ?? SystemEnvironmentStore.Instance;
+
+                record.ConfigWasSet = envStore.Get(request.ConfigVariable, EnvironmentScope.User) != null;
+                record.ConfigPreviousValue = envStore.Get(request.ConfigVariable, EnvironmentScope.User);
+                record.ConfigAppliedValue = boundary.NormalizedTarget;
+                log.Save(record);
+
+                // Park the old directory so nothing writes into it while the config flips.
+                Directory.Move(boundary.NormalizedSource, backup);
+                record.AddStep("switch", $"原目录已改名为备份：{backup}");
+                log.Save(record);
+
+                var previous = envStore.Set(request.ConfigVariable, boundary.NormalizedTarget, EnvironmentScope.User);
+
+                // A health probe is the only proof the consumer actually reads the new location.
+                bool healthy = request.HealthCheck == null || request.HealthCheck();
+
+                if (!healthy)
+                {
+                    envStore.Restore(request.ConfigVariable, previous, EnvironmentScope.User);
+                    try
+                    {
+                        if (Directory.Exists(backup) && !Directory.Exists(boundary.NormalizedSource))
+                        {
+                            Directory.Move(backup, boundary.NormalizedSource);
+                        }
+                    }
+                    catch { }
+
+                    record.State = OperationState.SwitchFailed;
+                    record.AddStep("switch", "配置切换后健康检查未通过，已回滚配置与原目录。");
+                    log.Save(record);
+
+                    return new MigrationKernelResult
+                    {
+                        Outcome = new OperationOutcome
+                        {
+                            Status = OperationStatus.FailedRecoverable,
+                            Capability = Capability.VaultRelocate,
+                            DidMutate = false,
+                            Code = "health_check_failed",
+                            Message = "切换到新位置后应用健康检查未通过，已回滚配置与原目录。",
+                            Recovery = "数据仍在原位置；请确认停用了旧实例并重新发起。"
+                        },
+                        Record = record
+                    };
+                }
+
+                record.State = OperationState.Switched;
+                record.AddStep("switch", $"已修改官方配置 {request.ConfigVariable}={boundary.NormalizedTarget} 并通过健康检查。");
+                log.Save(record);
+
+                committed = true;
+
+                return new MigrationKernelResult
+                {
+                    Outcome = new OperationOutcome
+                    {
+                        Status = OperationStatus.Succeeded,
+                        Capability = Capability.VaultRelocate,
+                        DidMutate = true,
+                        Code = "switched_via_config",
+                        Message = $"已通过官方配置切换位置（{request.ConfigVariable}）。原目录保留为备份，空间尚未回收。",
+                        Evidence = new List<string>
+                        {
+                            $"配置项: {request.ConfigVariable}={boundary.NormalizedTarget}",
+                            $"原目录备份: {backup}（保留中）",
+                            $"文件数: {sourceManifest.Files.Count}，字节: {sourceManifest.TotalBytes}"
+                        },
+                        Recovery = "空间回收是独立的受授权步骤，不会随切换自动发生。"
+                    },
+                    Record = record
+                };
+            }
+
+            // ---------------------------------------------------------
+            // 5b. Compatibility fallback: filesystem redirection.
             // ---------------------------------------------------------
             Directory.Move(boundary.NormalizedSource, backup);
             record.AddStep("switch", $"源已改名为备份：{backup}");
