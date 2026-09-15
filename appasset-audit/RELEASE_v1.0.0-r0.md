@@ -2,10 +2,11 @@
 
 **发布摘要。本文件区分「已验证」「未运行」「不支持」三类，不得混为一谈。**
 
-- 提交：`66f9e55cfe988f9c783deb3b4e665569cf0348ab`（构建时工作树干净）
-- 分发包：`AppAssetSentinelNative-win-x64-66f9e55.zip`
+- 提交、构建时间、SDK 版本与工作树是否干净：**以同目录的 `MANIFEST.json` 为准**。
+  本文件不重复这些值，避免与本包内的机器可读记录不一致。
 - 内容：可执行文件 + `wwwroot`（含本地前端资源）+ `rules`（59 条画像规则）+ README + LICENSE + `MANIFEST.json`
-- `MANIFEST.json` 载有逐文件 SHA-256、提交号、SDK 版本与工作树是否干净
+- `MANIFEST.json` 载有逐文件 SHA-256、提交号、SDK 版本与工作树是否干净。构建脚本会在打包时
+校验本文件未与本包内的记录矛盾
 
 ---
 
@@ -68,4 +69,4 @@ pwsh -File scripts/New-Release.ps1
 
 脚本在 `index.html` 仍引用远程 CDN 或缺少本地前端资源时会**直接失败**，因此发布物不会
 在缺少依赖的情况下产出。`MANIFEST.json` 中的 `working_tree_dirty` 为 `false`，
-即本分发包可证明对应上述提交。
+即本分发包可证明对应其 `MANIFEST.json` 中记录的提交。

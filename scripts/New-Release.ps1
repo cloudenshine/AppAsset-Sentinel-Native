@@ -62,8 +62,32 @@ if (-not (Test-Path (Join-Path $packageDir 'wwwroot/vendor/tailwind.min.js'))) {
     throw '缺少本地前端资源 wwwroot/vendor/tailwind.min.js'
 }
 
-Write-Host "[4/6] 生成清单（文件哈希 + 提交 + 运行时版本）" -ForegroundColor Cyan
 $commit = (& git -C $repoRoot rev-parse HEAD).Trim()
+
+# AUDIT W12: the packaged documents must not contradict the machine-readable record.
+# A summary once hardcoded a commit and shipped naming a different archive than the one beside
+# it, so this now fails the build instead of trusting the prose to stay current.
+$commitShort = $commit.Substring(0, 7)
+$docs = @(Get-ChildItem -Path $packageDir -Filter *.md -File)
+foreach ($doc in $docs) {
+    $text = [System.IO.File]::ReadAllText($doc.FullName)
+
+    foreach ($zipRef in [regex]::Matches($text, "AppAssetSentinelNative-win-x64-[0-9a-f]{7}\.zip")) {
+        if ($zipRef.Value -ne "AppAssetSentinelNative-win-x64-$commitShort.zip") {
+            throw "打包文档 $($doc.Name) 引用了与本包不符的分发包名：$($zipRef.Value)"
+        }
+    }
+
+    foreach ($hashRef in [regex]::Matches($text, "[0-9a-f]{40}")) {
+        if (-not $commit.StartsWith($hashRef.Value, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "打包文档 $($doc.Name) 含有与本次构建不符的提交号：$($hashRef.Value)"
+        }
+    }
+}
+
+Write-Host "      文档与本包记录一致（提交 $commitShort）" -ForegroundColor DarkGray
+
+Write-Host "[4/6] 生成清单（文件哈希 + 提交 + 运行时版本）" -ForegroundColor Cyan
 $dirty = (& git -C $repoRoot status --porcelain)
 
 $entries = Get-ChildItem $packageDir -Recurse -File | ForEach-Object {
