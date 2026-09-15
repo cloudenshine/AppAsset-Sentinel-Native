@@ -30,3 +30,6 @@ appasset-audit/*.polluted-*.json
 appasset-audit/*.polluted-*.txt
 *.polluted-*.json
 *.polluted-*.txt
+
+## Release artifacts
+artifacts/

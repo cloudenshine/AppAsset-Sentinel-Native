@@ -58,6 +58,7 @@ public class Program
 
         _semanticEngine = new SemanticRuleEngine();
         _shield = new DependencyShield();
+        ReportPackagingIntegrity();
         RefreshAssets();
 
         bool r1Profile = args.Any(a => a.Equals("--profile=r1", StringComparison.OrdinalIgnoreCase)
@@ -108,6 +109,47 @@ public class Program
             Process.Start(new ProcessStartInfo { FileName = BaseUrl, UseShellExecute = true });
             Thread.Sleep(Timeout.Infinite);
         }
+    }
+
+    /// <summary>
+    /// AUDIT A26: the program loads wwwroot/ and rules/ from disk. A missing one must be
+    /// reported plainly at startup, because a source-tree run can otherwise mask a broken
+    /// package and the failure would only appear as silently missing behaviour.
+    /// </summary>
+    private static void ReportPackagingIntegrity()
+    {
+        string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+
+        string webRoot = GetWebRootPath();
+        string indexPath = Path.Combine(webRoot, "index.html");
+        if (!File.Exists(indexPath))
+        {
+            Console.WriteLine($"[!] 分发包不完整：未找到界面文件 {indexPath}");
+        }
+        else
+        {
+            Console.WriteLine($"[OK] 界面资源: {webRoot}");
+        }
+
+        var rulesDir = SemanticRuleEngine.FindRulesDirectory();
+        if (rulesDir == null)
+        {
+            Console.WriteLine($"[!] 分发包不完整：在 {baseDir} 及其父目录中未找到 rules/app_semantics.json");
+            Console.WriteLine($"    软件画像规则将无法加载，界面会显示通用说明而不是真实画像。");
+        }
+        else
+        {
+            string rulesFile = Path.Combine(rulesDir, "app_semantics.json");
+            var candidate = SemanticRuleEngine.TryLoadCandidate(rulesFile);
+            Console.WriteLine(candidate.Succeeded
+                ? $"[OK] 规则库: {rulesDir}（{candidate.Rules.Count} 条画像规则）"
+                : $"[!] 规则库存在但校验未通过：{candidate.Error}");
+        }
+
+        var vendor = Path.Combine(webRoot, "vendor", "tailwind.min.js");
+        Console.WriteLine(File.Exists(vendor)
+            ? "[OK] 本地前端资源: wwwroot/vendor"
+            : "[!] 缺少本地前端资源 wwwroot/vendor/tailwind.min.js（界面将无样式）");
     }
 
     private static void RefreshAssets()

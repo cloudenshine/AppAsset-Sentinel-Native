@@ -12,10 +12,21 @@
     <None Update="wwwroot\**">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
-    <None Update="..\..\rules\**">
+  </ItemGroup>
+
+  <!--
+    AUDIT A26: the program loads rules/ from disk at runtime, so the rules must be part of
+    the published output. Declaring them as Content with CopyToPublishDirectory guarantees
+    they land beside the executable; a None item with only CopyToOutputDirectory reached the
+    build output but was silently dropped from `dotnet publish`, which made a standalone
+    install unable to find its own rules.
+  -->
+  <ItemGroup>
+    <Content Include="..\..\rules\*.json"
+             Link="rules\%(Filename)%(Extension)">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-      <Link>rules\%(RecursiveDir)%(Filename)%(Extension)</Link>
-    </None>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
   </ItemGroup>
 
   <PropertyGroup>
@@ -23,6 +34,8 @@
     <TargetFramework>net9.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <!-- Audit warnings are useful during development but do not block a release build. -->
+    <NoWarn>$(NoWarn);CA1416</NoWarn>
   </PropertyGroup>
 
 </Project>
