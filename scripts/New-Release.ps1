@@ -48,6 +48,7 @@ foreach ($required in @('wwwroot', 'rules')) {
     Copy-Item $source (Join-Path $packageDir $required) -Recurse -Force
 }
 
+Copy-Item (Join-Path $repoRoot 'appasset-audit/RELEASE_v1.0.0-r0.md') $packageDir -Force
 Copy-Item (Join-Path $repoRoot 'README.md') $packageDir -Force
 Copy-Item (Join-Path $repoRoot 'LICENSE') $packageDir -Force
 
