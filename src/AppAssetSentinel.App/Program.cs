@@ -56,6 +56,22 @@ public class Program
     [STAThread]
     public static void Main(string[] args)
     {
+        // Select the posture first: both the CLI and the HTTP surface must report and enforce
+        // the same policy, so it is resolved before either can observe it.
+        if (args.Any(a => a.Equals("--profile=r1", StringComparison.OrdinalIgnoreCase)))
+        {
+            _policy = CapabilityPolicy.RelocationVerifiedProfile();
+            Console.WriteLine("[!] R1 迁移档已启用：仅开放已验收的写入能力。");
+        }
+
+        // AUDIT W12: read-only command surface, sharing this process's capability policy so a
+        // scripted caller cannot obtain a capability the GUI would refuse.
+        if (args.Any(IsCommand))
+        {
+            Environment.ExitCode = CommandLine.Run(args, _policy);
+            return;
+        }
+
         Console.WriteLine("============================================================");
         Console.WriteLine("  AppAsset Sentinel (Native) - 安全观察版 R0");
         Console.WriteLine("  能力门控: 只读观察 / 计划预览已开放，写入能力按审计门槛关闭");
@@ -70,15 +86,6 @@ public class Program
         // window on a full scan, then refresh in the background.
         LoadCachedInventory();
         StartBackgroundScan();
-
-        bool r1Profile = args.Any(a => a.Equals("--profile=r1", StringComparison.OrdinalIgnoreCase)
-                                        || a.Equals("--profile", StringComparison.OrdinalIgnoreCase));
-        if (args.Any(a => a.Equals("--profile=r1", StringComparison.OrdinalIgnoreCase)))
-        {
-            _policy = CapabilityPolicy.RelocationVerifiedProfile();
-            Console.WriteLine("[!] R1 迁移档已启用：VaultRelocate 与 JunctionUnlink 开放。");
-        }
-        _ = r1Profile;
 
         if (args.Length > 0 && args[0].Equals("--headless-scan", StringComparison.OrdinalIgnoreCase))
         {
@@ -134,6 +141,13 @@ public class Program
     /// reported plainly at startup, because a source-tree run can otherwise mask a broken
     /// package and the failure would only appear as silently missing behaviour.
     /// </summary>
+    /// <summary>
+    /// True when the invocation is a read-only command rather than the GUI or server.
+    /// Global flags such as --profile are allowed alongside a verb.
+    /// </summary>
+    private static bool IsCommand(string arg) =>
+        CommandLine.IsCommand(arg) || CommandLine.IsGlobalFlag(arg);
+
     private static void ReportPackagingIntegrity()
     {
         string baseDir = AppDomain.CurrentDomain.BaseDirectory;
@@ -680,6 +694,34 @@ public class Program
             });
         });
 
+        // -------------------------------------------------------------
+        // AUDIT W06/W07: Commit and Recover are separate, separately authorized actions.
+        // A successful switch alone never reclaims space and is never treated as a recovery.
+        // -------------------------------------------------------------
+        app.MapPost("/api/vault/commit", (CommitRequest req) =>
+        {
+            var decision = _policy.Check(Capability.VaultCommit);
+            if (!decision.IsAllowed)
+            {
+                return Results.Ok(OperationOutcome.Blocked(Capability.VaultCommit, decision.Reason));
+            }
+
+            var result = MigrationCommit.Commit(_operationLog, req.TaskId, req.Authorized);
+            return Results.Ok(result);
+        });
+
+        app.MapPost("/api/vault/recover", (RecoverRequest req) =>
+        {
+            var decision = _policy.Check(Capability.VaultRecover);
+            if (!decision.IsAllowed)
+            {
+                return Results.Ok(OperationOutcome.Blocked(Capability.VaultRecover, decision.Reason));
+            }
+
+            var result = MigrationCommit.Recover(_operationLog, req.TaskId, req.Authorized);
+            return Results.Ok(result);
+        });
+
         app.MapGet("/api/vault/watchdog", () => Results.Ok(DriftWatchdog.InspectAndAuditDrifts(_policy)));
 
         app.MapPost("/api/vault/auto-heal", (AutoHealRequest req) =>
@@ -913,6 +955,18 @@ public class RelocateRequest
     [JsonPropertyName("target_vault_path")] public string TargetVaultPath { get; set; } = string.Empty;
     [JsonPropertyName("asset_name")] public string AssetName { get; set; } = string.Empty;
     [JsonPropertyName("category")] public string Category { get; set; } = "ai_models";
+}
+
+public class CommitRequest
+{
+    [JsonPropertyName("task_id")] public string TaskId { get; set; } = string.Empty;
+    [JsonPropertyName("authorized")] public bool Authorized { get; set; }
+}
+
+public class RecoverRequest
+{
+    [JsonPropertyName("task_id")] public string TaskId { get; set; } = string.Empty;
+    [JsonPropertyName("authorized")] public bool Authorized { get; set; }
 }
 
 public class AutoHealRequest

@@ -50,6 +50,9 @@ public enum OperationState
 /// <summary>What should happen to the source backup once the switch is confirmed.</summary>
 public enum BackupDisposition
 {
+    /// <summary>The backup did not exist, so there was nothing to dispose of.</summary>
+    None,
+
     /// <summary>Keep the backup in place. The default: space is not reclaimed yet.</summary>
     Retained,
 

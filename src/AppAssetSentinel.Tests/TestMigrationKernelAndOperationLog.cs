@@ -413,13 +413,26 @@ public class TestMigrationKernelAndOperationLog : IDisposable
     {
         var profile = CapabilityPolicy.RelocationVerifiedProfile();
 
+        // Verified by W06/W07/W09 and therefore open in this profile.
         Assert.True(profile.AllowsMutation(Capability.VaultRelocate));
         Assert.True(profile.AllowsMutation(Capability.JunctionUnlink));
+        Assert.True(profile.AllowsMutation(Capability.VaultCommit));
+        Assert.True(profile.AllowsMutation(Capability.VaultRecover));
+        Assert.True(profile.AllowsMutation(Capability.DriftAutoHeal));
 
-        // Everything still without an acceptance gate stays closed.
+        // Still without an acceptance gate: live uninstall and the unguarded force clean.
         Assert.False(profile.AllowsMutation(Capability.UninstallLive));
         Assert.False(profile.AllowsMutation(Capability.ForceClean));
-        Assert.False(profile.AllowsMutation(Capability.DriftAutoHeal));
+
+        // The restore-point injection and false-success bugs are fixed, but the real creation
+        // path has not been accepted in an elevated environment, so it stays closed.
         Assert.False(profile.AllowsMutation(Capability.RestorePointCreate));
+
+        // R0 keeps every one of the above closed.
+        var r0 = CapabilityPolicy.SafeObservationDefault();
+        Assert.False(r0.AllowsMutation(Capability.VaultRelocate));
+        Assert.False(r0.AllowsMutation(Capability.VaultCommit));
+        Assert.False(r0.AllowsMutation(Capability.VaultRecover));
+        Assert.False(r0.AllowsMutation(Capability.DriftAutoHeal));
     }
 }

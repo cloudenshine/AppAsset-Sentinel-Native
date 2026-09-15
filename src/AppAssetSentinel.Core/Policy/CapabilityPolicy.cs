@@ -35,14 +35,22 @@ public sealed class CapabilityPolicy
             "A01：真实卸载尚未实现，必须返回 not_supported，不得返回成功。"),
         [Capability.ForceClean] = new(Capability.ForceClean, CapabilityState.Unsupported, true,
             "A02：递归删除未经过依赖护盾、数据保留与备份门控，已禁用。"),
+        // The following capabilities are implemented and verified (see W06-W09), but they are
+        // closed in this profile because R0 is defined as a read-only release. They are opened
+        // by RelocationVerifiedProfile(), not because the code is missing.
         [Capability.VaultRelocate] = new(Capability.VaultRelocate, CapabilityState.Blocked, true,
-            "A03/A04/A05/A10：迁移内核缺少 staging 独占、逐文件哈希与路径边界校验，待 W07 验收。"),
+            "R0 为只读发布档：迁移内核（W07）已实现并验收，需切换到 R1 档位才开放。"),
         [Capability.JunctionUnlink] = new(Capability.JunctionUnlink, CapabilityState.Blocked, true,
-            "A12：解除链接会隐藏真实恢复语义，待 W07 拆分 unlink 与 recover 后开放。"),
+            "R0 为只读发布档：解除联接属于写入操作，需切换到 R1 档位。"),
+        [Capability.VaultCommit] = new(Capability.VaultCommit, CapabilityState.Blocked, true,
+            "R0 为只读发布档：回收源备份会真正销毁数据，需切换到 R1 档位并显式授权。"),
+        [Capability.VaultRecover] = new(Capability.VaultRecover, CapabilityState.Blocked, true,
+            "R0 为只读发布档：恢复会改动已切换的布局，需切换到 R1 档位并显式授权。"),
         [Capability.DriftAutoHeal] = new(Capability.DriftAutoHeal, CapabilityState.Blocked, true,
-            "A06：自动愈合会按时间戳覆盖并删除漂移侧数据，待 W09 冲突保全验收。"),
+            "R0 为只读发布档：冲突保全式修复（W09）已实现，需切换到 R1 档位并按冲突规则执行。"),
         [Capability.RestorePointCreate] = new(Capability.RestorePointCreate, CapabilityState.Blocked, true,
-            "A07/A24：还原点描述存在脚本注入风险且失败时状态不真实，待 W03/W06 修复。")
+            "A07/A24：脚本注入与失败状态问题已修复（不再拼接脚本、按退出码判定），"
+            + "但尚未在提权环境下完成真实创建验收，因此保持关闭。")
     });
 
     /// <summary>
@@ -63,6 +71,18 @@ public sealed class CapabilityPolicy
         decisions[Capability.JunctionUnlink] = new CapabilityDecision(
             Capability.JunctionUnlink, CapabilityState.Enabled, true,
             "W07：解除联接仅移除锚点链接，源备份与仓库数据均保留。");
+
+        decisions[Capability.VaultCommit] = new CapabilityDecision(
+            Capability.VaultCommit, CapabilityState.Enabled, true,
+            "W06：提交会删除已切换任务的源备份；要求显式授权，回收量以卷可用空间为证据。");
+
+        decisions[Capability.VaultRecover] = new CapabilityDecision(
+            Capability.VaultRecover, CapabilityState.Enabled, true,
+            "W07：恢复会重建原布局，并拒绝删除切换后出现在锚点的新数据。");
+
+        decisions[Capability.DriftAutoHeal] = new CapabilityDecision(
+            Capability.DriftAutoHeal, CapabilityState.Enabled, true,
+            "W09：修复要求显式授权；存在内容冲突时只保留两份并交人工决定，绝不按时间戳覆盖。");
 
         return new CapabilityPolicy(decisions);
     }

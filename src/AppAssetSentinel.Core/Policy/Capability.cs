@@ -27,6 +27,12 @@ public enum Capability
     /// <summary>Remove an existing Junction link without restoring data (A12).</summary>
     JunctionUnlink,
 
+    /// <summary>Delete a switched task's source backup and reclaim the space (A11).</summary>
+    VaultCommit,
+
+    /// <summary>Undo a completed switch and restore the original layout (A12).</summary>
+    VaultRecover,
+
     /// <summary>Report drift between expected and observed state. Always allowed.</summary>
     DriftDiagnose,
 
