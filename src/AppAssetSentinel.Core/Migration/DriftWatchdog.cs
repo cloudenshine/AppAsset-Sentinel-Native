@@ -58,6 +58,22 @@ public sealed class DriftAuditReport
 
     [JsonPropertyName("repair_unavailable_reason")]
     public string RepairUnavailableReason { get; set; } = string.Empty;
+
+    /// <summary>
+    /// AUDIT W09: paths that look like vault assets but have no registration, so nothing was
+    /// actually verified for them. Without this, a report with drifted_count = 0 reads as
+    /// "everything is healthy" when in truth nothing was examined.
+    /// </summary>
+    [JsonPropertyName("unverified_paths")]
+    public List<string> UnverifiedPaths { get; set; } = new();
+
+    /// <summary>True only when every candidate path was actually audited.</summary>
+    [JsonPropertyName("coverage_complete")]
+    public bool CoverageComplete { get; set; } = true;
+
+    /// <summary>True only when coverage was complete AND every audited registration is healthy.</summary>
+    [JsonPropertyName("all_verified_healthy")]
+    public bool AllVerifiedHealthy { get; set; }
 }
 
 /// <summary>
@@ -66,7 +82,77 @@ public sealed class DriftAuditReport
 /// </summary>
 public static class DriftDiagnostics
 {
+    /// <summary>
+    /// Audits only the registrations. Coverage is reported as complete because the caller supplied
+    /// the whole set it knows about; use the overload below when candidate paths are also known.
+    /// </summary>
     public static DriftAuditReport Audit(CapabilityPolicy policy, List<VaultRegistration> registrations)
+    {
+        var report = AuditCore(policy, registrations);
+        report.CoverageComplete = true;
+        report.AllVerifiedHealthy = report.DriftedCount == 0;
+        return report;
+    }
+
+    /// <summary>
+    /// AUDIT W09: audits the registrations and additionally reports candidate paths that have no
+    /// registration at all. A path with no record is NOT healthy - it is unverified, and the
+    /// report says so instead of returning silence.
+    /// </summary>
+    public static DriftAuditReport Audit(
+        CapabilityPolicy policy,
+        List<VaultRegistration> registrations,
+        IEnumerable<string> candidatePaths)
+    {
+        var report = AuditCore(policy, registrations);
+
+        var registered = registrations
+            .Select(r => r.VirtualAnchorPath)
+            .Where(p => !string.IsNullOrWhiteSpace(p))
+            .Select(Normalize)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var candidate in candidatePaths)
+        {
+            if (string.IsNullOrWhiteSpace(candidate))
+            {
+                continue;
+            }
+
+            if (!registered.Contains(Normalize(candidate)))
+            {
+                report.UnverifiedPaths.Add(candidate);
+            }
+        }
+
+        report.CoverageComplete = report.UnverifiedPaths.Count == 0;
+        report.AllVerifiedHealthy = report.CoverageComplete && report.DriftedCount == 0;
+
+        if (!report.CoverageComplete)
+        {
+            // Repair must not be offered on the strength of an incomplete audit.
+            report.RepairAvailable = false;
+            report.RepairUnavailableReason =
+                $"有 {report.UnverifiedPaths.Count} 个候选路径没有登记记录，未做任何校验；"
+                + "在补齐记录或明确排除之前，不能据此判断资产健康。";
+        }
+
+        return report;
+    }
+
+    private static string Normalize(string path)
+    {
+        try
+        {
+            return Path.GetFullPath(path).TrimEnd('\\');
+        }
+        catch
+        {
+            return path.TrimEnd('\\');
+        }
+    }
+
+    private static DriftAuditReport AuditCore(CapabilityPolicy policy, List<VaultRegistration> registrations)
     {
         var report = new DriftAuditReport { TotalRegistrations = registrations.Count };
 
