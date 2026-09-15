@@ -112,6 +112,23 @@ try {
     Write-Host "  目标原文件未被覆盖：$(if (Test-Path $targetB) { (Get-Content $targetB -Raw).Trim() } else { '(缺失)' })"
     Write-Host "  源文件仍然存在：$(if (Test-Path (Join-Path $sourceB 'shared.bin')) { (Get-Content (Join-Path $sourceB 'shared.bin') -Raw).Trim() } else { '(缺失)' })"
 
+    # A conflict deliberately retains the verified copy as evidence, so it must be reported
+    # rather than silently consuming disk.
+    $retained = Get-ChildItem (Split-Path -Parent $targetBParent) -Directory -Force -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -like '*.sentinel-staging-*' }
+    if ($retained) {
+        foreach ($r in $retained) {
+            $size = (Get-ChildItem $r.FullName -Recurse -File -ErrorAction SilentlyContinue |
+                     Measure-Object -Property Length -Sum).Sum
+            Write-Host "  [保留] 冲突证据副本：$($r.FullName)（$size 字节，需人工比对后删除）" -ForegroundColor DarkYellow
+        }
+    } else {
+        Write-Host "  [!!] 冲突场景未保留证据副本，与设计不符" -ForegroundColor Red
+    }
+
+    # The rehearsal owns these copies, so it removes them once reported.
+    foreach ($r in $retained) { Remove-Safely $r.FullName }
+
     Remove-Safely ("${SourceDrive}:\_sentinel_kernel_src_${runId}b")
     Remove-Safely $targetBParent
 }

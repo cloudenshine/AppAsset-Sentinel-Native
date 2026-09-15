@@ -89,6 +89,12 @@ public static class MigrationKernel
         var claimed = new List<string>();
         bool committed = false;
 
+        // AUDIT W07: staging is task-owned scratch space. It must not outlive the call unless
+        // a genuine conflict means the user needs to inspect both copies — otherwise a refused
+        // relocation silently leaves a full duplicate of the user's data on disk.
+        string stagingForCleanup = string.Empty;
+        bool keepStaging = false;
+
         try
         {
             // ---------------------------------------------------------
@@ -131,6 +137,9 @@ public static class MigrationKernel
             string backup = boundary.NormalizedSource + BackupSuffix + request.TaskId;
             record.StagingPath = staging;
             record.SourceBackupPath = backup;
+
+            // Any failure past this point must not leave the scratch copy behind.
+            stagingForCleanup = staging;
 
             if (Directory.Exists(staging) || File.Exists(staging))
             {
@@ -243,8 +252,11 @@ public static class MigrationKernel
 
                 if (File.Exists(stagingFile))
                 {
-                    // Preserve both sides rather than overwriting either (AUDIT A03/A06).
+                    // Defensive only: staging is created fresh for this task, so this should
+                    // never trigger. Target-side conflicts are detected below, against the
+                    // directory that actually exists on disk.
                     record.Conflicts.Add(file.RelativePath);
+                    keepStaging = true;
                     continue;
                 }
 
@@ -264,6 +276,7 @@ public static class MigrationKernel
             if (!comparison.Identical)
             {
                 record.State = OperationState.VerifyFailed;
+                // The copy failed verification, so it has no value; the source is untouched.
                 record.AddStep("verify", "内容校验未通过：" + string.Join("; ", comparison.Differences.Take(10)));
                 log.Save(record);
 
@@ -308,8 +321,44 @@ public static class MigrationKernel
                 };
             }
 
+            // AUDIT A03/A06: the overlap that matters is between the verified copy and the
+            // directory that already exists at the confirmed target. Comparing against the
+            // fresh staging directory could never detect it.
+            if (Directory.Exists(boundary.NormalizedTarget))
+            {
+                var existingManifest = FileIntegrity.BuildManifest(boundary.NormalizedTarget);
+
+                if (existingManifest.Complete)
+                {
+                    var existing = existingManifest.Files.ToDictionary(f => f.RelativePath, StringComparer.OrdinalIgnoreCase);
+
+                    foreach (var file in stagingManifest.Files)
+                    {
+                        if (existing.TryGetValue(file.RelativePath, out var other) &&
+                            !string.Equals(file.Sha256, other.Sha256, StringComparison.OrdinalIgnoreCase))
+                        {
+                            record.Conflicts.Add(file.RelativePath);
+                        }
+                    }
+
+                    if (record.Conflicts.Count > 0)
+                    {
+                        record.AddStep("verify",
+                            $"目标已存在 {record.Conflicts.Count} 个同名不同内容的文件，未覆盖任何一侧。");
+                    }
+                }
+                else
+                {
+                    record.AddStep("verify", "目标目录存在无法读取的条目，无法安全比对，拒绝继续。");
+                    record.Conflicts.Add("(目标清单不完整)");
+                }
+            }
+
             if (record.Conflicts.Count > 0)
             {
+                // Both copies now matter, so the staging copy is evidence the user needs.
+                keepStaging = true;
+
                 record.State = OperationState.NeedsAttention;
                 record.AddStep("verify", "存在目标同名冲突，需要人工决定，未做切换。");
                 log.Save(record);
@@ -322,9 +371,10 @@ public static class MigrationKernel
                         Capability = Capability.VaultRelocate,
                         DidMutate = false,
                         Code = "target_conflict",
-                        Message = $"目标位置已有 {record.Conflicts.Count} 个不同内容的同名文件，两侧数据均已保留，未覆盖、未切换。",
+                        Message = $"目标位置已有 {record.Conflicts.Count} 个不同内容的同名文件，两侧数据均已保留，未覆盖、未切换。"
+                            + $" 为保证两份内容都可查看，暂存副本保留在 {staging}（占用磁盘空间，处理完后请删除）。",
                         Evidence = record.Conflicts.Take(20).ToList(),
-                        Recovery = "请人工比对后再决定保留哪一份；staging 目录已保留供检查。"
+                        Recovery = $"请人工比对后再决定保留哪一份；比对完成后可安全删除暂存目录：{staging}"
                     },
                     Record = record
                 };
@@ -352,8 +402,9 @@ public static class MigrationKernel
                         Capability = Capability.VaultRelocate,
                         DidMutate = false,
                         Code = "target_occupied",
-                        Message = $"目标路径已存在且不属于本任务：{boundary.NormalizedTarget}",
-                        Recovery = "请确认目标位置后重试；staging 已保留。"
+                        Message = $"目标路径已存在且不属于本任务：{boundary.NormalizedTarget}"
+                            + "（本次创建的暂存副本已删除，源数据未受影响）",
+                        Recovery = "请确认目标位置后重试。"
                     },
                     Record = record
                 };
@@ -586,7 +637,46 @@ public static class MigrationKernel
         }
         finally
         {
+            // AUDIT W07: a refused or failed relocation must not leave a duplicate copy of the
+            // user's data on disk. Staging survives only when a conflict makes it evidence.
+            if (!keepStaging && !string.IsNullOrEmpty(stagingForCleanup))
+            {
+                TryRemoveStaging(stagingForCleanup, record);
+            }
+
             OperationLog.ReleaseResources(claimed);
+        }
+    }
+
+    /// <summary>
+    /// Removes the task-owned staging directory. It only ever deletes the path this task
+    /// created itself, and reports failure rather than hiding it.
+    /// </summary>
+    private static void TryRemoveStaging(string staging, OperationRecord record)
+    {
+        try
+        {
+            if (!Directory.Exists(staging))
+            {
+                return;
+            }
+
+            // Safety: never follow into anything we did not create.
+            if (string.IsNullOrWhiteSpace(staging) || !staging.Contains(StagingSuffix, StringComparison.OrdinalIgnoreCase))
+            {
+                record.AddStep("cleanup", $"跳过清理，路径不像本任务创建：{staging}");
+                return;
+            }
+
+            Directory.Delete(staging, true);
+            record.AddStep("cleanup", $"已清理暂存目录：{staging}");
+        }
+        catch (Exception ex)
+        {
+            record.AddStep("cleanup", $"暂存目录清理失败，需人工处理：{staging}（{ex.Message}）");
+            record.RecoveryNote = string.IsNullOrEmpty(record.RecoveryNote)
+                ? $"暂存目录未能自动清理：{staging}"
+                : record.RecoveryNote + $" 暂存目录未能自动清理：{staging}";
         }
     }
 
