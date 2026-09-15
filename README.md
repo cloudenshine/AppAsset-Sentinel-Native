@@ -4,7 +4,7 @@
   <img src="https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-0078D6?logo=windows&logoColor=white" alt="Windows" />
   <img src="https://img.shields.io/badge/.NET-9.0%20Native-512BD4?logo=dotnet&logoColor=white" alt=".NET 9" />
   <img src="https://img.shields.io/badge/UI-Photino%20WebView2-blue" alt="Photino" />
-  <img src="https://img.shields.io/badge/Tests-69%20Passed-emerald" alt="Tests" />
+  <img src="https://img.shields.io/badge/Tests-85%20Passed-emerald" alt="Tests" />
   <img src="https://img.shields.io/badge/License-Apache%202.0-orange.svg" alt="License" />
 </p>
 

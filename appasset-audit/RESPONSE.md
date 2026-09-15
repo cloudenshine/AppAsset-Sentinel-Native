@@ -11,7 +11,7 @@
 | 发布门槛 | 状态 | 说明 |
 |---|---|---|
 | **R0 安全观察版** | ✅ 已完成 | W01、W02、W03 全部达成验收；W04 关键项达成（A13/A14/A16/A17/A22）。 |
-| R1 Ollama 可信迁移版 | ⏳ 未开始 | 依赖 W06/W07 迁移内核状态机与 W08 适配器，路径边界与完整性原语已就绪。 |
+| **R1 可信迁移（协议层）** | 🟡 部分完成 | W06 写前日志与统一写门控、W07 迁移内核已完成并通过 16 项新测试。**W08 Ollama 专用适配器与隔离双卷真应用验收未完成**，因此 R1 档位需显式 `--profile=r1` 才启用。 |
 | R2 资产关系版 | ⏳ 未开始 | W09 漂移诊断已可用（只诊断），W10 第二适配器未开始。 |
 | R3 发布与 Agent 接入版 | ⏳ 未开始 | 尚未提供完整自包含 ZIP 与空目录离线启动验收。 |
 
@@ -126,17 +126,63 @@ UNCHANGED env: True    UNCHANGED registry: True
 
 ### W05 / P1 保留证据图 —— ✅ 完成（见 A16）
 
-### W06–W12 —— ⏳ 未实施
+### W06 / P0→P1 操作日志与统一写门控 —— ✅ 完成
 
-已具备的原语（为 W07 铺垫，但**内核状态机尚未建立，因此迁移仍处于 Blocked**）：
+新增 `Core/Operations/OperationRecord.cs` 与 `OperationLog.cs`：
 
-- `PathIdentity`：规范化、跟随重解析点解析真实身份、同路径/互相包含/别名越界判定（覆盖 A05）。
-- `FileIntegrity`：逐文件 SHA-256 清单与内容级比对，明确拒绝「仅比总字节数」（覆盖 A04）。
-  测试用例固定了审计探针的 `AAAA` vs `BBBB`：字节数相同、内容不同 → 判定为不一致。
+- 记录精确源/目标身份、staging 与备份路径、环境配置旧值、期望清单、冲突列表与步骤时间线。
+- **写前日志**：每个文件系统动作之前先落盘，异常终止后仍能读到「尝试了什么」。
+  恢复判断读日志，**不再相信缓存里的 Completed**。
+- 显式状态：Planned / PreflightFailed / Copying / Copied / VerifyFailed / Verified /
+  SwitchFailed / Switched / NeedsAttention / FailedRecoverable / Committed。
+- **重叠资源互斥**：两个任务不能在同一路径上赛跑（大小写与尾分隔符不敏感）。
+- 原子写入（临时文件 + 替换），损坏文件显式报错而非当作「无记录」。
+- 只读恢复接口：`GET /api/operations`、`GET /api/operations/{taskId}`。
 
-未完成：staging 独占目录与冲突保全（A03/A06）、写前日志与幂等状态机（W06）、
-Ollama 专用适配器与真应用验收（W08）、HF/Docker 适配器（W10）、UI 异步化（W11）、
-完整发布 ZIP 与空目录离线启动验收（W12）。
+### W07 / P1 文件迁移内核 —— ✅ 完成
+
+新增 `Core/Operations/MigrationKernel.cs`，逐条落实审计要求：
+
+| 审计要求 | 实现 |
+|---|---|
+| A03 staging 新建且任务独占 | 目标恒为 `<target>.sentinel-staging-<taskId>`，已存在则拒绝 |
+| A03/A06 同名冲突不覆盖 | 目标已存在同名文件时**两侧都保留**，停止并报 `NeedsAttention` |
+| A04 逐文件哈希 | `FileIntegrity` 按 SHA-256 与文件集比对，明确拒绝「仅比总字节数」 |
+| A04 源稳定性 | 复制后重新测量源；发生变化则拒绝切换（`source_unstable`） |
+| A05 路径边界 | `PathIdentity` 拒绝同路径、互相包含、别名越界、重解析点叠加 |
+| A10 精确目标 | 严格使用用户确认路径；修复探针「`…\models\ollama` → `…\models\models`」 |
+| A11 空间不早收 | 切换成功后**源备份保留**，`BackupDisposition=Retained`，回收是独立受授权步骤 |
+| W06 崩溃可判定 | 每步先写日志；失败或取消回滚到原布局 |
+
+**真机实测（R1 档，临时目录）**
+
+```
+R1 relocate → {"status":"Succeeded","did_mutate":true,"code":"switched",
+  "message":"切换完成：原路径已指向新位置。源备份仍保留，空间尚未回收。"}
+exact target exists: True
+anchor is ReparsePoint: True
+read through anchor: FAKE-WEIGHTS-2MB
+/api/operations → total=1, unfinished=1
+  state=Switched  backup=…\ollama.sentinel-backup-task_aa79d1cd3a50  disposition=Retained
+```
+
+默认档位仍为 R0：`POST /api/vault/relocate` → `Blocked`。
+
+### W08–W12 —— ⏳ 未实施
+
+- **W08 Ollama 专用适配器**：未实现。优先改官方配置、Junction 降级为兼容措施、
+  迁移后「可列出并推理」的真应用探针均未做。
+- **W09 冲突保全漂移修复**：未实现，漂移保持只诊断。
+- **W10** HF/Docker 只读适配器：未实现。
+- **W11** UI 异步化：未实现。
+- **W12** 完整自包含 ZIP 与空目录离线启动验收：未实现。
+
+### R1 档位的开放条件
+
+`--profile=r1` 启用 `RelocationVerifiedProfile`：只开放 `VaultRelocate` 与 `JunctionUnlink`；
+`UninstallLive / ForceClean / DriftAutoHeal / RestorePointCreate` 仍然关闭。
+之所以不设为默认：R1 验收要求**隔离账户 + 两个真实测试卷 + 真应用重启可用性**，
+本轮未具备该环境，故不宣称 R1 已通过。
 
 ---
 
@@ -144,7 +190,7 @@ Ollama 专用适配器与真应用验收（W08）、HF/Docker 适配器（W10）
 
 ```
 dotnet test src/AppAssetSentinel.Tests/AppAssetSentinel.Tests.csproj
-已通过! - 失败: 0，通过: 69，已跳过: 0，总计: 69
+已通过! - 失败: 0，通过: 85，已跳过: 0，总计: 85
 ```
 
 新增/重写的用例覆盖：能力门控、登记原子性与损坏、路径边界（同路径/互相包含/别名/大小写/尾分隔符）、
