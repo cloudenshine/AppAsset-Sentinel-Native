@@ -1,4 +1,5 @@
 using AppAssetSentinel.Core.Adapters;
+using AppAssetSentinel.Core.Scanner;
 using AppAssetSentinel.Core.Migration;
 using Xunit;
 
@@ -27,7 +28,22 @@ public class TestHuggingFaceAndReadOnlyAdapters : IDisposable
     {
         try
         {
-            if (Directory.Exists(_root)) Directory.Delete(_root, true);
+            if (Directory.Exists(_root))
+            {
+                foreach (var dir in Directory.GetDirectories(_root, "*", SearchOption.AllDirectories))
+                {
+                    try
+                    {
+                        if (FastDirectorySizer.IsReparsePoint(dir))
+                        {
+                            JunctionEngine.RemoveJunction(dir, out _);
+                        }
+                    }
+                    catch { }
+                }
+
+                Directory.Delete(_root, true);
+            }
         }
         catch { }
     }

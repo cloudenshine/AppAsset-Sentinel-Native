@@ -27,6 +27,20 @@ public class TestUnknownStatesAndEvidence : IDisposable
         {
             if (Directory.Exists(_testRoot))
             {
+                // Junctions must be unlinked before the recursive delete, otherwise the delete
+                // throws on the reparse point and the catch would hide the leftover fixture.
+                foreach (var dir in Directory.GetDirectories(_testRoot, "*", SearchOption.AllDirectories))
+                {
+                    try
+                    {
+                        if (FastDirectorySizer.IsReparsePoint(dir))
+                        {
+                            JunctionEngine.RemoveJunction(dir, out _);
+                        }
+                    }
+                    catch { }
+                }
+
                 Directory.Delete(_testRoot, true);
             }
         }

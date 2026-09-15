@@ -32,7 +32,28 @@ public class TestStagingLifecycle : IDisposable
     {
         try
         {
-            if (Directory.Exists(_root)) Directory.Delete(_root, true);
+            if (Directory.Exists(_root))
+            {
+                // Unlink junctions first, then retry the delete: a bare recursive delete can
+                // partially succeed and leave an empty root behind, and the catch would hide it.
+                foreach (var dir in Directory.GetDirectories(_root, "*", SearchOption.AllDirectories))
+                {
+                    try
+                    {
+                        if (FastDirectorySizer.IsReparsePoint(dir))
+                        {
+                            JunctionEngine.RemoveJunction(dir, out _);
+                        }
+                    }
+                    catch { }
+                }
+
+                for (int attempt = 0; attempt < 3 && Directory.Exists(_root); attempt++)
+                {
+                    try { Directory.Delete(_root, true); }
+                    catch { System.Threading.Thread.Sleep(30); }
+                }
+            }
         }
         catch { }
     }
