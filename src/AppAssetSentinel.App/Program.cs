@@ -166,11 +166,10 @@ public class Program
     /// package and the failure would only appear as silently missing behaviour.
     /// </summary>
     /// <summary>
-    /// True when the invocation is a read-only command rather than the GUI or server.
-    /// Global flags such as --profile are allowed alongside a verb.
+    /// True only when the argument is an actual command verb. A global flag such as
+    /// --profile=r1 is NOT a command: treating it as one made the server refuse to start.
     /// </summary>
-    private static bool IsCommand(string arg) =>
-        CommandLine.IsCommand(arg) || CommandLine.IsGlobalFlag(arg);
+    private static bool IsCommand(string arg) => CommandLine.IsCommand(arg);
 
     private static void ReportPackagingIntegrity()
     {
