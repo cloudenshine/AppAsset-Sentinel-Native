@@ -61,14 +61,28 @@ public class Program
     {
         // Select the posture first: both the CLI and the HTTP surface must report and enforce
         // the same policy, so it is resolved before either can observe it.
+        bool mcpMode = args.Any(a => a.Equals("--mcp", StringComparison.OrdinalIgnoreCase));
+
         if (args.Any(a => a.Equals("--profile=r1", StringComparison.OrdinalIgnoreCase)))
         {
             _policy = CapabilityPolicy.RelocationVerifiedProfile();
-            Console.WriteLine("[!] R1 迁移档已启用：仅开放已验收的写入能力。");
+
+            // AUDIT W12: under --mcp, stdout is the JSON-RPC channel. A stray human-readable
+            // line there corrupts the protocol stream, so diagnostics go to stderr instead.
+            (mcpMode ? Console.Error : Console.Out)
+                .WriteLine("[!] R1 迁移档已启用：仅开放已验收的写入能力。");
         }
 
         // AUDIT W12: read-only command surface, sharing this process's capability policy so a
         // scripted caller cannot obtain a capability the GUI would refuse.
+        // AUDIT W12: the MCP surface shares this same _policy instance, so it cannot expose a
+        // capability the GUI or HTTP API would refuse.
+        if (mcpMode)
+        {
+            Environment.ExitCode = McpServer.Run(_policy);
+            return;
+        }
+
         if (args.Any(IsCommand))
         {
             Environment.ExitCode = CommandLine.Run(args, _policy);
