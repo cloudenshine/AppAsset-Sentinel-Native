@@ -16,7 +16,13 @@ public enum ScanPhase
     Completed,
 
     /// <summary>A scan failed. Previous results, if any, are still being served.</summary>
-    Failed
+    Failed,
+
+    /// <summary>
+    /// The scan was stopped on request. It is NOT a failure, and the partial result must not be
+    /// presented as a complete inventory.
+    /// </summary>
+    Cancelled
 }
 
 public sealed class ScanStatus

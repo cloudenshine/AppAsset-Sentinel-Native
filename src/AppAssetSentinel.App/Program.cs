@@ -44,6 +44,9 @@ public class Program
     private static readonly object _scanGate = new();
     private static bool _scanRunning;
 
+    /// <summary>AUDIT W11: the running scan's cancellation handle, replaced per run.</summary>
+    private static ScanCancellation? _scanCancellation;
+
     /// <summary>
     /// Server-authored plans only. The client may reference a plan by id but can never
     /// hand back an executable plan document (AUDIT W03).
@@ -232,6 +235,13 @@ public class Program
         _scanStatus.StartedAtUtc = DateTime.UtcNow;
         _scanStatus.LastError = string.Empty;
 
+        var cancellation = new ScanCancellation();
+        lock (_scanGate)
+        {
+            _scanCancellation?.Dispose();
+            _scanCancellation = cancellation;
+        }
+
         var thread = new Thread(() =>
         {
             var sw = Stopwatch.StartNew();
@@ -239,13 +249,23 @@ public class Program
             {
                 Console.WriteLine("[*] 后台扫描：Win32 注册表、便携资产与多维遥测...");
 
-                var scanned = _scanner.ScanInstalledSoftware(includeSystemComponents: false, calculateDiskSize: true);
+                // Checkpoint 1: before the expensive inventory pass.
+                cancellation.ThrowIfCancelled();
+
+                var scanned = _scanner.ScanInstalledSoftware(
+                    includeSystemComponents: false, calculateDiskSize: true, cancellationToken: cancellation.Token);
+
+                // Checkpoint 2: between enrichment and the telemetry pass.
+                cancellation.ThrowIfCancelled();
+
                 _semanticEngine.EnrichAll(scanned);
 
                 foreach (var a in scanned)
                 {
                     DynamicAssetIntelligence.EnhanceWithDynamicIntelligence(a);
                 }
+
+                cancellation.ThrowIfCancelled();
 
                 _shield.BuildGraph(scanned);
                 _telemetry.AnalyzeAll(scanned);
@@ -274,6 +294,17 @@ public class Program
                 _scanStatus.CompletedAtUtc = DateTime.UtcNow;
                 _scanStatus.ServingCachedSnapshot = false;
                 Console.WriteLine($"[OK] 扫描完成：{scanned.Count} 项，耗时 {sw.ElapsedMilliseconds} ms。");
+            }
+            catch (OperationCanceledException)
+            {
+                // AUDIT W11: a cancelled scan is not a failure. The previous inventory stays
+                // authoritative and the partial result is explicitly NOT presented as complete.
+                sw.Stop();
+                _scanStatus.Phase = ScanPhase.Cancelled;
+                _scanStatus.DurationMs = sw.ElapsedMilliseconds;
+                _scanStatus.ServingCachedSnapshot = true;
+                _scanStatus.LastError = ScanCancellation.DescribeCooperativeStop("扫描");
+                Console.WriteLine("[*] 扫描已按请求停止；继续提供上一次完整结果。");
             }
             catch (Exception ex)
             {
@@ -412,6 +443,36 @@ public class Program
         }));
 
         app.MapGet("/api/scan/status", () => Results.Ok(_scanStatus));
+
+        // AUDIT W11: task cancellation. Reporting that it is cooperative is part of the contract.
+        app.MapPost("/api/scan/cancel", () =>
+        {
+            ScanCancellation? active;
+            lock (_scanGate)
+            {
+                active = _scanCancellation;
+            }
+
+            if (active == null || !_scanRunning)
+            {
+                return Results.Ok(new
+                {
+                    status = "not_running",
+                    message = "当前没有正在运行的扫描。",
+                    scan_phase = _scanStatus.Phase.ToString()
+                });
+            }
+
+            bool requested = active.Request();
+
+            return Results.Ok(new
+            {
+                status = requested ? "cancelling" : "already_requested",
+                cooperative = true,
+                message = "已请求停止；扫描将在下一个检查点结束，已完成的资产保留。",
+                scan_phase = _scanStatus.Phase.ToString()
+            });
+        });
 
         app.MapGet("/api/policy", () => Results.Ok(new
         {

@@ -26,10 +26,18 @@ public class Win32RegistryScanner
         "InstallLocation", "LocationRoot", "InstallPath", "InstallDir", "Path", "TargetDir", "UninstallPath", "AppPath"
     };
 
-    public List<SoftwareAsset> ScanInstalledSoftware(bool includeSystemComponents = false, bool calculateDiskSize = true)
+    /// <summary>
+    /// AUDIT W11: the optional token makes a long scan stoppable. The check runs inside the
+    /// per-asset size loop, which is where nearly all the wall-clock time is spent, so
+    /// cancellation is honoured promptly rather than only between top-level phases.
+    /// </summary>
+    public List<SoftwareAsset> ScanInstalledSoftware(
+        bool includeSystemComponents = false,
+        bool calculateDiskSize = true,
+        CancellationToken cancellationToken = default)
     {
-        var regApps = ScanRegistry(includeSystemComponents, calculateDiskSize);
-        var portableApps = ScanPortable(calculateDiskSize);
+        var regApps = ScanRegistry(includeSystemComponents, calculateDiskSize, cancellationToken);
+        var portableApps = ScanPortable(calculateDiskSize, cancellationToken);
 
         // Deduplication against registry apps
         var registeredLocations = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -58,7 +66,10 @@ public class Win32RegistryScanner
         return regApps.OrderBy(x => x.DisplayName).ToList();
     }
 
-    public List<SoftwareAsset> ScanRegistry(bool includeSystemComponents = false, bool calculateDiskSize = true)
+    public List<SoftwareAsset> ScanRegistry(
+        bool includeSystemComponents = false,
+        bool calculateDiskSize = true,
+        CancellationToken cancellationToken = default)
     {
         var rawItems = new List<SoftwareAsset>();
         var seenSigs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -202,6 +213,9 @@ public class Win32RegistryScanner
                             asset.IsJunction = junc.IsJunction;
                             asset.JunctionTarget = junc.TargetPath;
 
+                            // Checkpoint per asset: this loop is the slow part.
+                            cancellationToken.ThrowIfCancellationRequested();
+
                             if (calculateDiskSize && !asset.IsJunction)
                             {
                                 // AUDIT A22: keep the completeness signal instead of a bare number.
@@ -228,7 +242,9 @@ public class Win32RegistryScanner
         return ConsolidatePythonSuite(rawItems);
     }
 
-    public List<SoftwareAsset> ScanPortable(bool calculateDiskSize = true)
+    public List<SoftwareAsset> ScanPortable(
+        bool calculateDiskSize = true,
+        CancellationToken cancellationToken = default)
     {
         var results = new List<SoftwareAsset>();
 
