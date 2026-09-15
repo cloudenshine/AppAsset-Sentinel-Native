@@ -1,0 +1,38 @@
+[
+  {
+    "upstream_pattern": "(python.*(3\\.\\d+|core)|python)",
+    "downstream_pattern": "(comfy.*ui|comfyui|comfy.*desktop|sd-webui|stable-diffusion)",
+    "dependency_type": "runtime_environment",
+    "description": "ComfyUI/WebUI 核心依赖 Python 解释器环境运行模型计算图。"
+  },
+  {
+    "upstream_pattern": "(git.*version|git)",
+    "downstream_pattern": "(comfy.*ui|comfyui|comfy.*desktop|sd-webui|stable-diffusion)",
+    "dependency_type": "tool_dependency",
+    "description": "ComfyUI 强依赖 Git 进行 Custom Nodes 自定义节点插件的拉取与版本同步。"
+  },
+  {
+    "upstream_pattern": "(cuda.*toolkit|nvidia.*cuda)",
+    "downstream_pattern": "(comfy.*ui|comfyui|ollama|vllm|pytorch)",
+    "dependency_type": "hardware_acceleration",
+    "description": "本地大模型与生成式 AI 依赖 NVIDIA CUDA 架构提供核心 GPU 算力加速。"
+  },
+  {
+    "upstream_pattern": "(windows.*subsystem.*for.*linux|wsl)",
+    "downstream_pattern": "(docker.*desktop|docker)",
+    "dependency_type": "platform_subsystem",
+    "description": "Docker Desktop 依赖 WSL2 虚拟化子系统提供 Linux 内核与容器隔离环境。"
+  },
+  {
+    "upstream_pattern": "(ollama)",
+    "downstream_pattern": "(cherry.*studio|cherrystudio|page.*assist|open.*webui)",
+    "dependency_type": "runtime_environment",
+    "description": "桌面大模型客户端强依赖本地 Ollama 11434 端口作为核心模型推理后端。"
+  },
+  {
+    "upstream_pattern": "(visual.*c\\+\\+.*redistributable|vcredist)",
+    "downstream_pattern": ".*",
+    "dependency_type": "runtime_environment",
+    "description": "Visual C++ 基础运行库为全系统各类编译型软件提供 C 运行时支撑。"
+  }
+]
