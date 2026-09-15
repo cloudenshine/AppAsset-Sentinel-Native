@@ -1,0 +1,60 @@
+name: 贡献新软件画像或依赖规则 (Rule Contribution)
+description: 提交新软件的语义画像特征（用途、分类、生态、依赖），丰富外置规则库
+title: "[Rule]: 新增软件规则 - "
+labels: ["rules", "community-contribution"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢为 AppAsset Sentinel 贡献规则库！通过外置解耦机制，您无需修改任何 C# 源码即可帮助全网开发者规避误杀与环境崩溃。
+  - type: input
+    id: software_name
+    attributes:
+      label: 软件正式名称 (Software Name)
+      placeholder: 例如: Ollama / ComfyUI / 剪映专业版
+    validations:
+      required: true
+  - type: input
+    id: regex_pattern
+    attributes:
+      label: 正则匹配模式 (Regex Pattern)
+      placeholder: 例如: (ollama|ollama app)
+    validations:
+      required: true
+  - type: dropdown
+    id: category
+    attributes:
+      label: 软件所属领域 (Category)
+      options:
+        - ai_compute (AI模型与本地算力底座)
+        - ai_workstation (AI桌面工作流客户端)
+        - dev_environment (开发编程运行环境)
+        - dev_tools (开发与协同工具)
+        - office_collaboration (办公协同与社交通讯)
+        - design_graphics (设计、3D与工程图纸)
+        - media_production (音视频剪辑与多媒体)
+        - system_runtime (系统底层运行库)
+        - tools_utility (日常通用工具)
+    validations:
+      required: true
+  - type: textarea
+    id: plain_role
+    attributes:
+      label: 通俗定位 (Plain Role - 非专业人士一眼看懂)
+      placeholder: 一句话通俗说明这款软件是干什么的，杜绝模板废话。
+    validations:
+      required: true
+  - type: textarea
+    id: core_usage
+    attributes:
+      label: 核心用途 (Core Usage)
+      placeholder: 详细说明核心功能、支撑的业务场景。
+    validations:
+      required: true
+  - type: textarea
+    id: dependency_chain
+    attributes:
+      label: 依赖链与卸载后果 (Dependency Chain & Impact)
+      placeholder: 强依赖哪些底层运行库？卸载后会导致哪些下游软件崩溃？
+    validations:
+      required: true

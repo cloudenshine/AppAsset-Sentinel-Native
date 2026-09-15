@@ -1,0 +1,30 @@
+name: 报告问题 (Bug Report)
+description: 提交程序崩溃、路径识别异常或假死等缺陷
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈问题！请尽量提供清晰复现步骤。
+  - type: input
+    id: os_version
+    attributes:
+      label: Windows 操作系统版本
+      placeholder: 例如: Windows 11 24H2 (x64)
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: 问题现象描述
+      placeholder: 详细描述发生了什么异常
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      placeholder: 1. 打开控制台 2. 点击某个功能...
+    validations:
+      required: true
