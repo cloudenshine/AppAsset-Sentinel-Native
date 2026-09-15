@@ -1,8 +1,6 @@
-using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using AppAssetSentinel.Core.Models;
-using AppAssetSentinel.Core.Scanner;
+using AppAssetSentinel.Core.Policy;
 
 namespace AppAssetSentinel.Core.Migration;
 
@@ -26,6 +24,13 @@ public class VaultRegistration
     [JsonPropertyName("synced_env_var")]
     public string SyncedEnvVar { get; set; } = string.Empty;
 
+    /// <summary>Value that existed before we touched the variable, so it can be restored (A19).</summary>
+    [JsonPropertyName("env_var_previous_value")]
+    public string? EnvVarPreviousValue { get; set; }
+
+    [JsonPropertyName("env_var_was_set")]
+    public bool EnvVarWasSet { get; set; }
+
     [JsonPropertyName("is_junction_intact")]
     public bool IsJunctionIntact { get; set; } = true;
 
@@ -42,12 +47,98 @@ public class VaultRegistration
     public DateTime LastVerifiedAt { get; set; } = DateTime.UtcNow;
 }
 
-public static class AssetVaultEngine
+/// <summary>Result of loading the registry file, so corruption is visible (AUDIT A18).</summary>
+public sealed class VaultRegistryLoadResult
 {
-    private static readonly string RegistryFile = Path.Combine(
+    public bool Succeeded { get; init; }
+    public bool FileMissing { get; init; }
+    public string Error { get; init; } = string.Empty;
+    public List<VaultRegistration> Registrations { get; init; } = new();
+}
+
+/// <summary>
+/// Persistence for vault registrations. Writes are atomic (temp file + move) and failures
+/// are surfaced instead of swallowed (AUDIT A18). A corrupt file is reported as corruption
+/// rather than being silently treated as "no registrations".
+/// </summary>
+public static class VaultRegistry
+{
+    private static readonly object Gate = new();
+
+    public static string DefaultRegistryPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         @"AppAssetSentinel\vault_registry.json");
 
+    public static VaultRegistryLoadResult Load(string? registryPath = null)
+    {
+        string path = registryPath ?? DefaultRegistryPath;
+
+        if (!File.Exists(path))
+        {
+            return new VaultRegistryLoadResult { Succeeded = true, FileMissing = true };
+        }
+
+        try
+        {
+            string json = File.ReadAllText(path);
+            var parsed = JsonSerializer.Deserialize<List<VaultRegistration>>(json);
+            if (parsed == null)
+            {
+                return new VaultRegistryLoadResult
+                {
+                    Succeeded = false,
+                    Error = "登记文件内容为 null，判定为损坏。"
+                };
+            }
+
+            return new VaultRegistryLoadResult { Succeeded = true, Registrations = parsed };
+        }
+        catch (JsonException ex)
+        {
+            return new VaultRegistryLoadResult
+            {
+                Succeeded = false,
+                Error = $"登记文件 JSON 损坏：{ex.Message}"
+            };
+        }
+        catch (Exception ex)
+        {
+            return new VaultRegistryLoadResult { Succeeded = false, Error = ex.Message };
+        }
+    }
+
+    /// <summary>Atomically persists the registry. Throws on failure so callers cannot claim success.</summary>
+    public static void Save(List<VaultRegistration> registrations, string? registryPath = null)
+    {
+        string path = registryPath ?? DefaultRegistryPath;
+        string? dir = Path.GetDirectoryName(path);
+
+        lock (Gate)
+        {
+            if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+            {
+                Directory.CreateDirectory(dir);
+            }
+
+            string json = JsonSerializer.Serialize(registrations,
+                new JsonSerializerOptions { WriteIndented = true });
+
+            string temp = path + ".tmp";
+            File.WriteAllText(temp, json);
+
+            // Atomic replace: a crash here leaves the previous good file untouched.
+            File.Move(temp, path, overwrite: true);
+        }
+    }
+}
+
+/// <summary>
+/// Relocation entry point. Under the R0 capability gate (AUDIT W01) relocation is Blocked,
+/// so this returns an explicit Blocked outcome with no side effects. It is re-opened only
+/// after the W07 migration-kernel acceptance gate.
+/// </summary>
+public static class AssetVaultEngine
+{
     private static readonly Dictionary<string, string> KnownEnvironmentVariables = new(StringComparer.OrdinalIgnoreCase)
     {
         { "ollama", "OLLAMA_MODELS" },
@@ -56,106 +147,46 @@ public static class AssetVaultEngine
         { "uv", "UV_CACHE_DIR" }
     };
 
-    public static List<VaultRegistration> GetActiveRegistrations()
+    public static List<VaultRegistration> GetActiveRegistrations(string? registryPath = null)
     {
-        if (!File.Exists(RegistryFile)) return new List<VaultRegistration>();
-
-        try
-        {
-            var json = File.ReadAllText(RegistryFile);
-            return JsonSerializer.Deserialize<List<VaultRegistration>>(json) ?? new List<VaultRegistration>();
-        }
-        catch
-        {
-            return new List<VaultRegistration>();
-        }
+        var load = VaultRegistry.Load(registryPath);
+        return load.Succeeded ? load.Registrations : new List<VaultRegistration>();
     }
 
-    public static void SaveRegistrations(List<VaultRegistration> list)
+    public static void SaveRegistrations(List<VaultRegistration> list, string? registryPath = null)
     {
-        try
+        VaultRegistry.Save(list, registryPath);
+    }
+
+    public static string? MatchEnvironmentVariable(string assetName, string sourcePath)
+    {
+        foreach (var (key, envVar) in KnownEnvironmentVariables)
         {
-            var dir = Path.GetDirectoryName(RegistryFile);
-            if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+            if (assetName.Contains(key, StringComparison.OrdinalIgnoreCase) ||
+                sourcePath.Contains(key, StringComparison.OrdinalIgnoreCase))
             {
-                Directory.CreateDirectory(dir);
+                return envVar;
             }
-            var json = JsonSerializer.Serialize(list, new JsonSerializerOptions { WriteIndented = true });
-            File.WriteAllText(RegistryFile, json);
         }
-        catch { }
+
+        return null;
     }
 
-    /// <summary>
-    /// Executes Relocation with Dual-Lock Anti-Drift:
-    /// Lock 1: Kernel NTFS Junction Point
-    /// Lock 2: Windows User Environment Variable Lock
-    /// </summary>
-    public static async Task<MigrationTask> RelocateAndDualLockAsync(
+    public static OperationOutcome RelocateAndDualLock(
+        CapabilityPolicy policy,
         string sourceDir,
         string targetVaultDir,
         string assetName,
-        string category,
-        IProgress<(long bytesMigrated, long totalBytes)>? progress = null,
-        CancellationToken ct = default)
+        string category)
     {
-        sourceDir = Path.GetFullPath(sourceDir).TrimEnd('\\');
-        targetVaultDir = Path.GetFullPath(targetVaultDir).TrimEnd('\\');
-
-        string targetParent = Path.GetDirectoryName(targetVaultDir) ?? @"D:\AIStack_Vault";
-        string targetFolderName = Path.GetFileName(targetVaultDir);
-
-        // 1. Perform atomic copy and create Junction
-        var task = await JunctionEngine.MigrateDirectoryAsync(
-            sourceDir,
-            targetParent,
-            assetName: assetName,
-            progress: progress,
-            cancellationToken: ct
-        );
-
-        if (task.Status != MigrationStatus.Completed)
+        var decision = policy.Check(Capability.VaultRelocate);
+        if (!decision.IsAllowed)
         {
-            return task;
+            return OperationOutcome.Blocked(Capability.VaultRelocate,
+                $"{decision.Reason}（源 {sourceDir}，目标 {targetVaultDir}；未做任何修改。）");
         }
 
-        // 2. Perform Lock 2: Sync Windows User Environment Variable if applicable
-        string matchedEnv = "";
-        foreach (var (key, envVar) in KnownEnvironmentVariables)
-        {
-            if (assetName.Contains(key, StringComparison.OrdinalIgnoreCase) || sourceDir.Contains(key, StringComparison.OrdinalIgnoreCase))
-            {
-                try
-                {
-                    Environment.SetEnvironmentVariable(envVar, task.TargetPath, EnvironmentVariableTarget.User);
-                    Environment.SetEnvironmentVariable(envVar, task.TargetPath, EnvironmentVariableTarget.Process);
-                    matchedEnv = $"{envVar}={task.TargetPath}";
-                }
-                catch { }
-                break;
-            }
-        }
-
-        // 3. Register with Vault Watchdog
-        var registrations = GetActiveRegistrations();
-        registrations.RemoveAll(r => r.VirtualAnchorPath.Equals(sourceDir, StringComparison.OrdinalIgnoreCase));
-
-        registrations.Add(new VaultRegistration
-        {
-            AssetName = assetName,
-            Category = category,
-            VirtualAnchorPath = sourceDir,
-            PhysicalVaultPath = task.TargetPath,
-            SyncedEnvVar = matchedEnv,
-            IsJunctionIntact = true,
-            DriftDetected = false,
-            CreatedAt = DateTime.UtcNow,
-            LastVerifiedAt = DateTime.UtcNow
-        });
-
-        SaveRegistrations(registrations);
-
-        task.StatusMessage = $"双向锁死归仓成功！已建立 NTFS 目录联接并同步环境锁定：{matchedEnv}";
-        return task;
+        return OperationOutcome.Unsupported(Capability.VaultRelocate,
+            $"迁移内核尚未通过 W07 验收（源 {sourceDir}，目标 {targetVaultDir}），未做任何修改。");
     }
 }

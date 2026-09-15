@@ -1,0 +1,26 @@
+{
+  "baseline_commit": "f7c9dbf7a29b55cf7fa3d832bf3833ac67ee6e75",
+  "review_date": "2026-09-15",
+  "files": {
+    "AUDIT.md": {
+      "bytes": 21052,
+      "sha256": "c4e35460992c2fbccbd9118b36c4c58cb51ea9626aeb3a695c6d1c6f73f04c1c"
+    },
+    "IMPLEMENTATION_BACKLOG.md": {
+      "bytes": 8912,
+      "sha256": "50a3676e7a709141a3919dfccf2d68c7facffbf79e380c68d1aa72cf9da014d4"
+    },
+    "README.md": {
+      "bytes": 845,
+      "sha256": "fb446be078c1dec7dbe6e6d66365b089fe809b4b216ca2947264468677cba8ff"
+    },
+    "logic_probes.py": {
+      "bytes": 4923,
+      "sha256": "51a6bac8ce38bf9dd7d38b0e70a297bd0cfd76ae7752955c44a9c1c5d485c45a"
+    },
+    "logic_probe_results.json": {
+      "bytes": 1877,
+      "sha256": "dc65a17c87706a7c01e2e50a1873ff9df1d551587e68129c795438ae6958d0af"
+    }
+  }
+}

@@ -82,17 +82,23 @@ public class TestPhase1_ScannerAndSizer : IDisposable
 
         // Create a junction inside folder B pointing back to folder A (infinite loop trap!)
         var loopJunction = Path.Combine(folderB, "LoopToA");
-        
-        bool juncCreated = AppAssetSentinel.Core.Migration.JunctionEngine.CreateJunction(loopJunction, folderA, out var err);
-        if (juncCreated)
-        {
-            // Sizer MUST NOT enter an infinite loop or double count!
-            long size = FastDirectorySizer.CalculateDirectorySize(folderA);
-            
-            // Total should be 5000 + 3000 = 8000 bytes, ignoring the loop junction
-            Assert.Equal(8000, size);
 
-            // Clean up junction first
+        // AUDIT A27: a failed junction creation must not silently pass the test.
+        TestEnvironment.RequireJunctionSupport();
+
+        bool created = AppAssetSentinel.Core.Migration.JunctionEngine.CreateJunction(loopJunction, folderA, out var err);
+        Assert.True(created, $"无法创建用于循环保护的目录联接：{err}");
+
+        try
+        {
+            // Sizer MUST NOT enter an infinite loop or double count.
+            long size = FastDirectorySizer.CalculateDirectorySize(folderA);
+
+            // Total should be 5000 + 3000 = 8000 bytes, ignoring the loop junction.
+            Assert.Equal(8000, size);
+        }
+        finally
+        {
             AppAssetSentinel.Core.Migration.JunctionEngine.RemoveJunction(loopJunction, out _);
         }
     }

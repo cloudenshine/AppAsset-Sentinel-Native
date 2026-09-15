@@ -67,6 +67,13 @@ public class SoftwareAsset
     [JsonPropertyName("estimated_size_bytes")]
     public long EstimatedSizeBytes { get; set; } = 0;
 
+    /// <summary>AUDIT A22: false when the size walk could not read every entry.</summary>
+    [JsonPropertyName("size_measurement_complete")]
+    public bool SizeMeasurementComplete { get; set; } = true;
+
+    [JsonPropertyName("size_skips")]
+    public long SizeSkips { get; set; } = 0;
+
     [JsonPropertyName("registry_key_path")]
     public string RegistryKeyPath { get; set; } = string.Empty;
 
@@ -74,19 +81,31 @@ public class SoftwareAsset
     public string Architecture { get; set; } = "x64"; // x64, x86, arm64
 
     [JsonPropertyName("heat_level")]
-    public string HeatLevel { get; set; } = "warm"; // hot, warm, cooling, zombie, infrastructure
+    public string HeatLevel { get; set; } = "unknown"; // hot, warm, cooling, zombie, infrastructure, unknown
 
     [JsonPropertyName("heat_score")]
-    public double HeatScore { get; set; } = 50.0;
+    public double HeatScore { get; set; } = 0.0;
 
     [JsonPropertyName("days_since_last_use")]
-    public int DaysSinceLastUse { get; set; } = 0;
+    public int? DaysSinceLastUse { get; set; } = null;
 
     [JsonPropertyName("last_used_timestamp")]
     public string LastUsedTimestamp { get; set; } = string.Empty;
 
     [JsonPropertyName("telemetry_source")]
     public string TelemetrySource { get; set; } = string.Empty;
+
+    /// <summary>
+    /// AUDIT A13: how strongly the usage claim is supported.
+    /// confirmed = observed live activity; inferred = indirect file evidence;
+    /// unknown = nothing was observed, which must never be reported as "abandoned".
+    /// </summary>
+    [JsonPropertyName("usage_confidence")]
+    public string UsageConfidence { get; set; } = "unknown";
+
+    /// <summary>Evidence kinds actually observed, so the UI can explain the basis.</summary>
+    [JsonPropertyName("usage_evidence")]
+    public List<string> UsageEvidence { get; set; } = new();
 
     [JsonPropertyName("is_running")]
     public bool IsRunning { get; set; } = false;

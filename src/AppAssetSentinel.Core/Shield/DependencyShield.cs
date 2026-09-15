@@ -237,10 +237,60 @@ public class DependencyShield
             catch { }
         }
 
-        // Cycle resolution: break cycles
-        var acyclicLinks = BreakCycles(links);
-        _graph.AddRange(acyclicLinks);
-        return acyclicLinks;
+        // AUDIT A16: the evidence graph keeps every observed edge. Cycles are a real
+        // property of some installs, and deleting an edge to make a pretty DAG destroys
+        // the very fact we collected. Traversal safety is handled by CountCyclicEdges
+        // and by callers that walk with visited-sets.
+        _graph.AddRange(links);
+        return links;
+    }
+
+    /// <summary>
+    /// Counts edges that participate in a cycle (same-node or mutually reachable).
+    /// Reported for display only — the edges themselves are preserved.
+    /// </summary>
+    public static int CountCyclicEdges(List<DependencyLink> links)
+    {
+        var adj = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var link in links)
+        {
+            if (!adj.TryGetValue(link.UpstreamSoftwareId, out var set))
+            {
+                set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                adj[link.UpstreamSoftwareId] = set;
+            }
+            set.Add(link.DownstreamSoftwareId);
+        }
+
+        bool Reachable(string from, string to)
+        {
+            var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var stack = new Stack<string>();
+            stack.Push(from);
+
+            while (stack.Count > 0)
+            {
+                string node = stack.Pop();
+                if (string.Equals(node, to, StringComparison.OrdinalIgnoreCase)) return true;
+                if (!visited.Add(node)) continue;
+                if (!adj.TryGetValue(node, out var next)) continue;
+                foreach (var n in next) stack.Push(n);
+            }
+
+            return false;
+        }
+
+        int cyclic = 0;
+        foreach (var link in links)
+        {
+            if (string.Equals(link.UpstreamSoftwareId, link.DownstreamSoftwareId, StringComparison.OrdinalIgnoreCase) ||
+                Reachable(link.DownstreamSoftwareId, link.UpstreamSoftwareId))
+            {
+                cyclic++;
+            }
+        }
+
+        return cyclic;
     }
 
     public SafetyReport EvaluateUninstallSafety(string softwareId, List<SoftwareAsset> allApps)

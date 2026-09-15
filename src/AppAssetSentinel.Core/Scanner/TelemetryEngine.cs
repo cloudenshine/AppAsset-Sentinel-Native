@@ -326,11 +326,19 @@ public class TelemetryEngine
             }
         }
 
-        // Fallback
+        // AUDIT A13: never fabricate a date. The previous implementation hard-filled
+        // "180 days ago" and then labelled the app a zombie, turning "we did not observe
+        // any use" into the false factual claim "it has not been used for 180 days".
         if (latestTime == null)
         {
-            latestTime = DateTime.Now.AddDays(-180);
-            evidenceSource = "inferred_legacy";
+            app.HeatLevel = "unknown";
+            app.HeatScore = 0.0;
+            app.DaysSinceLastUse = null;
+            app.LastUsedTimestamp = string.Empty;
+            app.TelemetrySource = "no_evidence_observed";
+            app.UsageConfidence = "unknown";
+            app.UsageEvidence.Add("未观察到进程、服务、快捷方式或配置写入等活动证据");
+            return;
         }
 
         int daysAgo = Math.Max(0, (int)(DateTime.Now - latestTime.Value).TotalDays);
@@ -343,8 +351,17 @@ public class TelemetryEngine
         {
             app.HeatScore = 95.0;
             app.HeatLevel = "infrastructure";
+            app.UsageConfidence = "confirmed";
             return;
         }
+
+        // AUDIT A13: file mtimes prove *something touched a file*, not that a human used
+        // the application. Treat them as inferred evidence so the UI can be honest, and
+        // never let inferred evidence alone produce a "zombie" verdict.
+        bool weakEvidenceOnly = evidenceSource == "executable_file_stamp"
+                                || evidenceSource == "install_date_registration";
+        app.UsageConfidence = weakEvidenceOnly ? "inferred" : "confirmed";
+        app.UsageEvidence.Add(evidenceSource);
 
         // Normal applications: strict heat gradient
         if (daysAgo <= 3)
@@ -366,6 +383,13 @@ public class TelemetryEngine
         {
             app.HeatScore = Math.Round(20.0 + (90 - daysAgo) * 0.5, 1);
             app.HeatLevel = "cooling";
+        }
+        else if (weakEvidenceOnly)
+        {
+            // Enough to say "likely idle", not enough to say "safe to delete".
+            app.HeatScore = 15.0;
+            app.HeatLevel = "cooling";
+            app.UsageEvidence.Add("仅凭文件时间推断，不足以判定为可清理的僵尸应用");
         }
         else
         {

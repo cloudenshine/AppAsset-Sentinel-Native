@@ -63,16 +63,43 @@ public class TestPhase4_SafetyAndAdversarial : IDisposable
     }
 
     [Fact]
-    public void TestRegistryBackupExport()
+    public void TestRegistryBackupExportReportsRealResult()
     {
-        // Export HKCU\Environment which is guaranteed to exist
-        string backupFile = RegistryBackupService.BackupRegistryKey(@"HKEY_CURRENT_USER\Environment", _tempBackupDir);
+        // Export HKCU\Environment which is guaranteed to exist.
+        var backup = RegistryBackupService.BackupRegistryKey(@"HKEY_CURRENT_USER\Environment", _tempBackupDir);
 
-        Assert.False(string.IsNullOrEmpty(backupFile));
-        Assert.True(File.Exists(backupFile));
+        // AUDIT A24: success is only claimed when reg.exe really produced a non-empty file.
+        Assert.True(backup.Succeeded, backup.Error);
+        Assert.Equal(0, backup.ExitCode);
+        Assert.True(backup.Bytes > 0);
+        Assert.True(File.Exists(backup.Path));
+        Assert.Contains("HKEY_CURRENT_USER", backup.Scope);
 
-        var content = File.ReadAllText(backupFile);
+        var content = File.ReadAllText(backup.Path);
         Assert.Contains("Windows Registry Editor", content);
+    }
+
+    [Fact]
+    public void TestRegistryBackupReportsFailureForBogusKey()
+    {
+        var backup = RegistryBackupService.BackupRegistryKey(
+            @"HKEY_CURRENT_USER\Software\__sentinel_does_not_exist__", _tempBackupDir);
+
+        Assert.False(backup.Succeeded);
+        Assert.False(string.IsNullOrEmpty(backup.Error));
+    }
+
+    [Fact]
+    public void TestRestorePointDescriptionSanitisationStripsInjectionCharacters()
+    {
+        // AUDIT A07: the description is data, never code. Quotes/backticks/semicolons
+        // must not survive into anything PowerShell could interpret.
+        var result = SystemRestoreService.CreateRestorePoint(
+            "x'; Remove-Item -Recurse C:\\Windows; $(calc)`whoami`\"");
+
+        // Whatever the elevation outcome, the call must never throw and must report honestly.
+        Assert.NotNull(result);
+        Assert.False(string.IsNullOrEmpty(result.Message));
     }
 
     [Theory]

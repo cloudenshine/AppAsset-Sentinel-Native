@@ -4,7 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>AppAsset Sentinel Native | 智能软件资产全生命周期控制台</title>
-  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- AUDIT A08: front-end assets are served from this package, never a remote CDN. -->
+  <script src="vendor/tailwind.min.js"></script>
   <style>
     body { background-color: #0d1117; color: #c9d1d9; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
     .glass-panel { background: rgba(22, 27, 34, 0.9); backdrop-filter: blur(12px); border: 1px solid rgba(48, 54, 61, 0.7); }
@@ -101,7 +102,7 @@
 
         <div class="glass-card p-5 rounded-xl flex items-center justify-between">
           <div>
-            <p id="lbl-stat-zombie" class="text-xs font-semibold text-gray-400 uppercase tracking-wider">🧊 真实僵尸软件 (&gt;90天未用且无依赖)</p>
+            <p id="lbl-stat-zombie" class="text-xs font-semibold text-gray-400 uppercase tracking-wider">🧊 长期闲置软件 (&gt;90天，有活动证据且无依赖)</p>
             <h3 id="stat-zombie" class="text-2xl font-bold text-amber-400 mt-1">--</h3>
             <p id="stat-zombie-size" class="text-xs text-amber-500 mt-1">待释放空间: --</p>
           </div>
@@ -115,6 +116,7 @@
             <p id="lbl-stat-infra" class="text-xs font-semibold text-gray-400 uppercase tracking-wider">🛡️ 受保护静默基础设施</p>
             <h3 id="stat-infra" class="text-2xl font-bold text-emerald-400 mt-1">--</h3>
             <p id="sub-stat-infra" class="text-xs text-emerald-500 mt-1">驱动/SDK/运行时·终身免疫</p>
+            <p id="sub-stat-unknown" class="text-[11px] text-gray-500 mt-1">未观察到使用证据: --</p>
           </div>
           <div class="p-3 bg-emerald-500/10 text-emerald-400 rounded-xl">
             <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
@@ -144,7 +146,8 @@
           <button onclick="setFilterHeat('hot')" class="filter-heat-btn px-3 py-1 rounded-full bg-[#161b22] hover:bg-gray-800 text-gray-300 transition" data-heat="hot">🔥 极度活跃</button>
           <button onclick="setFilterHeat('warm')" class="filter-heat-btn px-3 py-1 rounded-full bg-[#161b22] hover:bg-gray-800 text-gray-300 transition" data-heat="warm">☕ 正常使用</button>
           <button onclick="setFilterHeat('cooling')" class="filter-heat-btn px-3 py-1 rounded-full bg-[#161b22] hover:bg-gray-800 text-gray-300 transition" data-heat="cooling">❄️ 较少使用</button>
-          <button onclick="setFilterHeat('zombie')" class="filter-heat-btn px-3 py-1 rounded-full bg-[#161b22] hover:bg-gray-800 text-gray-300 transition" data-heat="zombie">🧊 真实长期闲置</button>
+          <button onclick="setFilterHeat('zombie')" class="filter-heat-btn px-3 py-1 rounded-full bg-[#161b22] hover:bg-gray-800 text-gray-300 transition" data-heat="zombie">🧊 长期闲置（有证据）</button>
+          <button onclick="setFilterHeat('unknown')" class="filter-heat-btn px-3 py-1 rounded-full bg-[#161b22] hover:bg-gray-800 text-gray-300 transition" data-heat="unknown">❓ 使用情况未知</button>
         </div>
       </div>
 
@@ -520,6 +523,63 @@
     };
 
     let currentLang = localStorage.getItem('sentinel_lang') || (navigator.language && navigator.language.startsWith('zh') ? 'zh' : 'en');
+
+    // =============================================================
+    // AUDIT A08 / A25 — local security and safe rendering helpers
+    // =============================================================
+    const SESSION_HEADER = 'X-Sentinel-Session';
+    let sessionToken = '';
+
+    async function initSession() {
+      try {
+        const res = await fetch('/api/session');
+        const data = await res.json();
+        sessionToken = data.token || '';
+      } catch (e) {
+        console.error('Failed to obtain local session token:', e);
+      }
+    }
+
+    /** Every state-changing call carries the local session token. */
+    async function apiPost(url, payload) {
+      return fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          [SESSION_HEADER]: sessionToken
+        },
+        body: JSON.stringify(payload ?? {})
+      });
+    }
+
+    /**
+     * Escape a value before it is placed into HTML. Server-derived strings (paths,
+     * publisher names, model names) are untrusted with respect to markup.
+     */
+    function esc(value) {
+      if (value === null || value === undefined) return '';
+      return String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    /** HTML-escape a value destined for a double-quoted attribute. */
+    const escAttr = esc;
+
+    /**
+     * AUDIT A25: Windows paths must never be interpolated into an inline event handler,
+     * because backslashes are escape characters in JavaScript string literals and
+     * "C:\Tools\X" silently becomes "C:ToolsX". Handlers are wired by delegation from
+     * data attributes, so the raw value survives byte-for-byte.
+     */
+    function readDataAttr(el, name) {
+      const raw = el.getAttribute(name);
+      return raw === null ? '' : raw;
+    }
+
     let currentApps = [];
     let currentPlan = null;
     let activeHeat = 'all';
@@ -631,6 +691,17 @@
         document.getElementById('stat-zombie').innerText = data.zombie_apps_count || 0;
         document.getElementById('stat-zombie-size').innerText = `${t.statZombieSub}${data.zombie_reclaimable_formatted || '0 GB'}`;
         document.getElementById('stat-infra').innerText = data.protected_infra_count || 0;
+        const unknownEl = document.getElementById('sub-stat-unknown');
+        if (unknownEl) {
+          const unknownCount = data.unknown_usage_count || 0;
+          const incomplete = data.size_measurement_incomplete_count || 0;
+          unknownEl.textContent = (isZh
+            ? `未观察到使用证据: ${unknownCount} 项`
+            : `No usage evidence: ${unknownCount} item(s)`)
+            + (incomplete > 0
+              ? (isZh ? ` · 体积未完整测量: ${incomplete} 项` : ` · Partial size: ${incomplete}`)
+              : '');
+        }
       } catch (e) {
         console.error('Failed to load overview:', e);
       }
@@ -672,6 +743,7 @@
         else if (heat === 'cooling') heatBadge = `<span class="px-2 py-0.5 rounded text-[11px] font-bold bg-cyan-950/80 text-cyan-300 border border-cyan-800">${isZh ? '❄️ 较少使用' : '❄️ Cooling Down'}</span>`;
         else if (heat === 'zombie') heatBadge = `<span class="px-2 py-0.5 rounded text-[11px] font-bold bg-gray-800 text-gray-300 border border-gray-700">${isZh ? '🧊 真实僵尸应用' : '🧊 True Zombie'}</span>`;
         else if (heat === 'infrastructure') heatBadge = `<span class="px-2 py-0.5 rounded text-[11px] font-bold bg-emerald-950/80 text-emerald-300 border border-emerald-800">${isZh ? '🛡️ 静默基础设施·已免疫' : '🛡️ Infrastructure · Immune'}</span>`;
+        else if (heat === 'unknown') heatBadge = `<span class="px-2 py-0.5 rounded text-[11px] font-bold bg-slate-800/80 text-slate-300 border border-slate-600">${isZh ? '❓ 使用情况未知' : '❓ Usage Unknown'}</span>`;
 
         const sizeMB = app.estimated_size_bytes ? (app.estimated_size_bytes / (1024*1024)).toFixed(1) : 0;
         const sizeStr = sizeMB > 1024 ? `${(sizeMB/1024).toFixed(2)} GB` : `${sizeMB} MB`;
@@ -684,14 +756,17 @@
         else if (aType === 'system_service') typeBadge = `<span class="text-[10px] bg-slate-800 text-slate-300 border border-slate-700 px-1.5 py-0.5 rounded">${isZh ? '系统服务' : 'Service'}</span>`;
         else typeBadge = `<span class="text-[10px] bg-gray-800 text-gray-300 px-1.5 py-0.5 rounded">${isZh ? '桌面应用' : 'App'}</span>`;
 
-        const tagsHtml = (app.tags || []).slice(0, 3).map(tg => `<span class="text-[10px] bg-[#21262d] text-gray-400 px-1.5 py-0.5 rounded">${tg}</span>`).join('');
+        const tagsHtml = (app.tags || []).slice(0, 3).map(tg => `<span class="text-[10px] bg-[#21262d] text-gray-400 px-1.5 py-0.5 rounded">${esc(tg)}</span>`).join('');
 
         let liveTraceHtml = '';
         if (app.is_running) {
           liveTraceHtml = `<span class="flex items-center space-x-1 text-emerald-400"><span class="w-2 h-2 rounded-full bg-emerald-400 animate-ping mr-1"></span>${isZh ? '正在前台/后台运行中' : 'Running Now'}</span>`;
         } else {
-          const days = app.days_since_last_use !== undefined ? app.days_since_last_use : 0;
-          const daysText = isZh ? (days === 0 ? '今天活跃' : `${days}天前`) : (days === 0 ? 'Active Today' : `${days}d ago`);
+          // AUDIT A13: a null day count means "not observed", not "zero days".
+          const days = app.days_since_last_use;
+          const daysText = (days === null || days === undefined)
+            ? (isZh ? '未观察到使用记录' : 'No usage evidence')
+            : (days === 0 ? (isZh ? '今天活跃' : 'Active Today') : (isZh ? `${days}天前` : `${days}d ago`));
           liveTraceHtml = `<span class="text-gray-400 flex items-center space-x-1"><svg class="w-3.5 h-3.5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>${daysText}</span>`;
         }
 
@@ -704,10 +779,10 @@
               <div class="flex items-start justify-between gap-2">
                 <div class="space-y-1">
                   <div class="flex items-center space-x-2">
-                    <h4 class="text-sm font-bold text-white tracking-wide hover:text-blue-400 transition" title="${app.display_name}">${app.display_name}</h4>
+                    <h4 class="text-sm font-bold text-white tracking-wide hover:text-blue-400 transition" title="${escAttr(app.display_name)}">${esc(app.display_name)}</h4>
                     ${typeBadge}
                   </div>
-                  <p class="text-xs text-gray-400">${app.publisher || (isZh ? '未知厂商' : 'Unknown Publisher')} · v${app.display_version || '1.0'}</p>
+                  <p class="text-xs text-gray-400">${esc(app.publisher || (isZh ? '未知厂商' : 'Unknown Publisher'))} · v${esc(app.display_version || '1.0')}</p>
                 </div>
                 ${heatBadge}
               </div>
@@ -719,7 +794,7 @@
                     <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
                     <span>${isZh ? '【多版本隔离并行 · SxS 基础设施】' : '【Side-by-Side (SxS) Coexistence Infrastructure】'}</span>
                   </div>
-                  <p class="text-gray-300 text-[11px] leading-relaxed">${app.sxs_info.tip}</p>
+                  <p class="text-gray-300 text-[11px] leading-relaxed">${esc(app.sxs_info.tip)}</p>
                 </div>
               ` : ''}
 
@@ -727,23 +802,23 @@
               <div class="bg-[#0d1117]/80 rounded-xl p-3 border border-[#30363d]/60 space-y-2 text-xs">
                 <div class="flex items-start space-x-2">
                   <span class="text-blue-400 font-semibold whitespace-nowrap">${t.role}</span>
-                  <span class="text-gray-200 leading-relaxed">${app.plain_role || (isZh ? '独立应用程序。' : 'Standalone application.')}</span>
+                  <span class="text-gray-200 leading-relaxed">${esc(app.plain_role || (isZh ? '独立应用程序。' : 'Standalone application.'))}</span>
                 </div>
                 <div class="flex items-start space-x-2">
                   <span class="text-emerald-400 font-semibold whitespace-nowrap">${t.usage}</span>
-                  <span class="text-gray-300 leading-relaxed">${app.core_usage || (isZh ? '提供核心业务功能支持与桌面交互。' : 'Provides core functionality and interactive features.')}</span>
+                  <span class="text-gray-300 leading-relaxed">${esc(app.core_usage || (isZh ? '提供核心业务功能支持与桌面交互。' : 'Provides core functionality and interactive features.'))}</span>
                 </div>
                 <div class="flex items-start space-x-2">
                   <span class="text-purple-400 font-semibold whitespace-nowrap">${t.ecosystem}</span>
-                  <span class="text-gray-400 leading-relaxed">${app.ecosystem || (isZh ? '桌面软件生态体系。' : 'Desktop software ecosystem.')}</span>
+                  <span class="text-gray-400 leading-relaxed">${esc(app.ecosystem || (isZh ? '桌面软件生态体系。' : 'Desktop software ecosystem.'))}</span>
                 </div>
                 <div class="flex items-start space-x-2 pt-1 border-t border-gray-800/80">
                   <span class="text-amber-400 font-semibold whitespace-nowrap">${t.impact}</span>
-                  <span class="text-gray-300 leading-relaxed">${app.dependency_chain || (isZh ? '独立运行，卸载不影响其他软件。' : 'Standalone runtime; uninstalling does not affect other applications.')}</span>
+                  <span class="text-gray-300 leading-relaxed">${esc(app.dependency_chain || (isZh ? '独立运行，卸载不影响其他软件。' : 'Standalone runtime; uninstalling does not affect other applications.'))}</span>
                 </div>
               </div>
 
-              <div class="flex flex-wrap gap-1">${tagsHtml}</div>
+              <div class="flex flex-wrap gap-1">${tagsHtml}${app.usage_confidence === 'inferred' ? `<span class="text-[10px] bg-amber-950/60 text-amber-300 border border-amber-800 px-1.5 py-0.5 rounded" title="${escAttr((app.usage_evidence || []).join(' | '))}">${isZh ? '推断证据' : 'Inferred'}</span>` : ''}</div>
             </div>
 
             <!-- Footer Stats & Actions -->
@@ -758,13 +833,21 @@
 
               <div class="flex items-center justify-between gap-2">
                 ${isBigAsset ? `
-                  <button onclick="openRelocateModal('${app.install_location}', 'D:\\\\AIStack_Vault\\\\models', '${app.display_name}', 'heavy_app', '${isZh ? '检测到软件体积超过 500MB，推荐使用双向锁死平移至高速大容量存储！' : 'Heavy asset detected (>500MB). Relocation with dual-lock recommended.'}')" class="px-2.5 py-1.5 bg-purple-950/80 hover:bg-purple-900 text-purple-200 border border-purple-700/60 text-xs font-semibold rounded-lg transition flex items-center space-x-1 shadow-sm">
+                  <button type="button"
+                          class="js-relocate px-2.5 py-1.5 bg-purple-950/80 hover:bg-purple-900 text-purple-200 border border-purple-700/60 text-xs font-semibold rounded-lg transition flex items-center space-x-1 shadow-sm"
+                          data-src="${escAttr(app.install_location)}"
+                          data-dst="D:\\AIStack_Vault\\apps"
+                          data-name="${escAttr(app.display_name)}"
+                          data-domain="heavy_app"
+                          data-reason="${isZh ? '检测到软件体积超过 500MB，可在支持写入后评估平移。' : 'Asset exceeds 500MB; relocation can be evaluated once writes are enabled.'}">
                     <svg class="w-3.5 h-3.5 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
                     <span>${t.actionRelocate}</span>
                   </button>
                 ` : '<div></div>'}
 
-                <button onclick="openPlanModal('${app.id}')" class="px-3 py-1.5 ${isImmune ? 'bg-indigo-950/80 hover:bg-indigo-900 text-indigo-200 border border-indigo-700/60' : 'bg-gray-800 hover:bg-rose-600 hover:text-white text-gray-300'} text-xs font-semibold rounded-lg transition flex items-center space-x-1.5 shadow-sm">
+                <button type="button"
+                        class="js-plan px-3 py-1.5 ${isImmune ? 'bg-indigo-950/80 hover:bg-indigo-900 text-indigo-200 border border-indigo-700/60' : 'bg-gray-800 hover:bg-rose-600 hover:text-white text-gray-300'} text-xs font-semibold rounded-lg transition flex items-center space-x-1.5 shadow-sm"
+                        data-id="${escAttr(app.id)}">
                   <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="${isImmune ? 'M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z' : 'M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16'}"/></svg>
                   <span>${isImmune ? t.actionProtected : t.actionUninstall}</span>
                 </button>
@@ -797,7 +880,7 @@
               <div class="flex items-center justify-between">
                 <span class="font-bold text-white text-sm flex items-center space-x-1">
                   <span>${v.drive_letter}: ${isZh ? '盘' : 'Drive'}</span>
-                  ${v.label ? `<span class="text-[10px] text-gray-400 font-normal truncate max-w-[70px]">(${v.label})</span>` : ''}
+                  ${v.label ? `<span class="text-[10px] text-gray-400 font-normal truncate max-w-[70px]">(${esc(v.label)})</span>` : ''}
                 </span>
                 <span class="px-1.5 py-0.5 rounded text-[10px] ${isSsd ? 'bg-purple-900 text-purple-200 border border-purple-700' : 'bg-gray-800 text-gray-300'} font-semibold">${v.media_type}</span>
               </div>
@@ -808,7 +891,7 @@
                 <span>${isZh ? '余' : 'Free'} ${v.free_formatted}</span>
                 <span>${isZh ? '总' : 'Total'} ${v.total_formatted}</span>
               </div>
-              <p class="text-[10px] text-gray-300 truncate pt-1 border-t border-gray-800/80">${v.recommended_role}</p>
+              <p class="text-[10px] text-gray-300 truncate pt-1 border-t border-gray-800/80">${esc(v.recommended_role)}</p>
             </div>
           `;
         }).join('');
@@ -825,7 +908,7 @@
         const drifted = audits.find(a => a.drift_detected);
         if (drifted) {
           banner.classList.remove('hidden');
-          document.getElementById('watchdog-alert-text').innerText = (currentLang === 'zh')
+          document.getElementById('watchdog-alert-text').textContent = (currentLang === 'zh')
             ? `⚠️ 漂移警报：检测到「${drifted.asset_name}」在软件升级后切断了目录联接！`
             : `⚠️ Drift Alert: Software update severed Junction link for [${drifted.asset_name}]!`;
           currentDriftRegId = drifted.id;
@@ -839,11 +922,7 @@
     async function executeAutoHeal() {
       if (!currentDriftRegId) return;
       try {
-        const res = await fetch('/api/vault/auto-heal', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ registration_id: currentDriftRegId })
-        });
+        const res = await apiPost('/api/vault/auto-heal', { registration_id: currentDriftRegId });
         const r = await res.json();
         alert(r.message || (r.success ? '自愈成功！' : '自愈失败'));
         await loadVaultDashboard();
@@ -893,42 +972,65 @@
         else if (c.domain === 'creative_media') domainColor = 'bg-rose-950 text-rose-300 border-rose-800';
         else if (c.domain === 'dev_containers') domainColor = 'bg-emerald-950 text-emerald-300 border-emerald-800';
 
+        // AUDIT A25: values travel through data attributes, never inline handlers.
         return `
           <div class="glass-card p-4 rounded-xl flex flex-col md:flex-row md:items-center justify-between gap-4 text-xs">
             <div class="space-y-1.5 max-w-[70%]">
               <div class="flex items-center space-x-2">
-                <span class="font-bold text-white text-sm">${c.name}</span>
-                <span class="px-2 py-0.5 rounded text-[10px] border font-semibold ${domainColor}">${c.domain_label}</span>
-                <span class="px-2 py-0.5 rounded text-[10px] ${c.is_c_drive ? 'bg-rose-950 text-rose-300 border border-rose-800' : 'bg-gray-800 text-gray-300'} font-mono font-bold">${c.current_drive} ${isZh ? '盘' : 'Drive'}</span>
-                ${c.is_junction ? `<span class="px-2 py-0.5 rounded text-[10px] bg-emerald-950 text-emerald-400 border border-emerald-800 font-bold">${isZh ? '⚡ 已建立双向锁死联接' : '⚡ Dual-Lock Linked'}</span>` : ''}
+                <span class="font-bold text-white text-sm">${esc(c.name)}</span>
+                <span class="px-2 py-0.5 rounded text-[10px] border font-semibold ${domainColor}">${esc(c.domain_label)}</span>
+                <span class="px-2 py-0.5 rounded text-[10px] ${c.is_c_drive ? 'bg-rose-950 text-rose-300 border border-rose-800' : 'bg-gray-800 text-gray-300'} font-mono font-bold">${esc(c.current_drive)} ${isZh ? '盘' : 'Drive'}</span>
+                ${c.is_junction ? `<span class="px-2 py-0.5 rounded text-[10px] bg-emerald-950 text-emerald-400 border border-emerald-800 font-bold">${isZh ? '⚡ 已建立锁死联接' : '⚡ Linked'}</span>` : ''}
               </div>
-              <p class="text-gray-400 font-mono text-[11px] truncate" title="${c.source_path}">${c.source_path}</p>
-              <p class="text-[11px] text-gray-300 leading-relaxed">${c.description}</p>
+              <p class="text-gray-400 font-mono text-[11px] truncate" title="${escAttr(c.source_path)}">${esc(c.source_path)}</p>
+              <p class="text-[11px] text-gray-300 leading-relaxed">${esc(c.description)}</p>
               ${c.is_junction ? `
-                <p class="text-[11px] text-purple-300 font-mono">${isZh ? '物理仓库端点' : 'Vault Endpoint'}: ${c.junction_target}</p>
+                <p class="text-[11px] text-purple-300 font-mono">${isZh ? '物理仓库端点' : 'Vault Endpoint'}: ${esc(c.junction_target)}</p>
               ` : `
                 <div class="bg-[#0d1117] p-2 rounded-lg border border-[#30363d]/60 text-[11px] space-y-1">
-                  <p class="text-gray-400 font-mono">${isZh ? '推荐归仓路径' : 'Recommended Vault'}: <span class="text-purple-300">${c.recommended_vault_path}</span></p>
-                  <p class="text-amber-300/90 text-[10px]">${c.recommendation_reason}</p>
+                  <p class="text-gray-400 font-mono">${isZh ? '推荐归仓路径' : 'Recommended Vault'}: <span class="text-purple-300">${esc(c.recommended_vault_path)}</span></p>
+                  <p class="text-amber-300/90 text-[10px]">${esc(c.recommendation_reason)}</p>
                 </div>
               `}
             </div>
 
             <div class="flex items-center space-x-4 self-start md:self-auto">
-              <span class="font-mono text-base font-bold text-white">${c.size_formatted}</span>
-              ${c.is_junction ? `
-                <button onclick="rollbackJunction('${c.source_path}')" class="px-3 py-1.5 bg-gray-800 hover:bg-rose-700 text-gray-300 hover:text-white rounded-lg transition font-medium">${t.unlinkBtn}</button>
-              ` : `
-                <button onclick="openRelocateModal('${c.source_path}', '${c.recommended_vault_path}', '${c.name}', '${c.domain}', '${encodeURIComponent(c.recommendation_reason)}')" class="px-3.5 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-lg transition font-bold shadow-lg shadow-purple-600/30 flex items-center space-x-1">
-                  <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
-                  <span>${t.dualLockBtn}</span>
-                </button>
-              `}
+              <span class="font-mono text-base font-bold text-white">${esc(c.size_formatted)}</span>
+              <button type="button"
+                      class="js-relocate px-3.5 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-lg transition font-bold shadow-lg shadow-purple-600/30 flex items-center space-x-1"
+                      data-src="${escAttr(c.source_path)}"
+                      data-dst="${escAttr(c.recommended_vault_path)}"
+                      data-name="${escAttr(c.name)}"
+                      data-domain="${escAttr(c.domain)}"
+                      data-reason="${escAttr(c.recommendation_reason)}">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+                <span>${isZh ? '归仓配置（只读预览）' : 'Vault Preview (Read-Only)'}</span>
+              </button>
             </div>
           </div>
         `;
       }).join('');
     }
+
+    // AUDIT A25: delegated listener replaces inline handlers carrying paths.
+    document.addEventListener('click', (event) => {
+      const relocateBtn = event.target.closest('.js-relocate');
+      if (relocateBtn) {
+        openRelocateModal(
+          readDataAttr(relocateBtn, 'data-src'),
+          readDataAttr(relocateBtn, 'data-dst'),
+          readDataAttr(relocateBtn, 'data-name'),
+          readDataAttr(relocateBtn, 'data-domain'),
+          readDataAttr(relocateBtn, 'data-reason'));
+        return;
+      }
+
+      const planBtn = event.target.closest('.js-plan');
+      if (planBtn) {
+        openPlanModal(readDataAttr(planBtn, 'data-id'));
+        return;
+      }
+    });
 
     function openRelocateModal(sourcePath, recommendedTarget, assetName, domain, encodedReason) {
       pendingRelocateData = { sourcePath, assetName, domain };
@@ -993,15 +1095,11 @@
       if (!confirm(confirmMsg)) return;
 
       try {
-        const res = await fetch('/api/vault/relocate', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            source_path: src,
-            target_vault_path: dst,
-            asset_name: pendingRelocateData.assetName,
-            category: pendingRelocateData.domain
-          })
+        const res = await apiPost('/api/vault/relocate', {
+          source_path: src,
+          target_vault_path: dst,
+          asset_name: pendingRelocateData.assetName,
+          category: pendingRelocateData.domain
         });
         const task = await res.json();
         if (task.status === 5 || task.status === 'Completed') {
@@ -1020,11 +1118,7 @@
       const isZh = (currentLang === 'zh');
       if (!confirm(isZh ? `确定解除「${path}」的目录联接吗？` : `Are you sure you want to unlink Junction [${path}]?`)) return;
       try {
-        const res = await fetch('/api/migration/rollback', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ junction_path: path })
-        });
+        const res = await apiPost('/api/migration/rollback', { junction_path: path });
         const r = await res.json();
         if (r.success) {
           alert(isZh ? '目录联接已安全移除！物理仓库中的数据依然完好保留。' : 'Junction unlinked safely. Data remains intact in vault.');
@@ -1056,7 +1150,7 @@
             <div class="glass-card p-4 rounded-xl space-y-3 text-xs ${isConnected ? 'border-emerald-700/80 bg-emerald-950/20 shadow-lg shadow-emerald-950/30' : 'border-[#30363d]/60 opacity-80'}">
               <div class="flex items-center justify-between">
                 <div class="flex items-center space-x-2">
-                  <span class="font-bold text-white text-sm">${node.display_name}</span>
+                  <span class="font-bold text-white text-sm">${esc(node.display_name)}</span>
                   <span class="px-1.5 py-0.5 rounded text-[10px] ${isConnected ? 'bg-emerald-900/80 text-emerald-200 border border-emerald-700' : 'bg-gray-800 text-gray-400'}">${isConnected ? (isZh ? '🔥 活跃依赖核心' : '🔥 Active Core') : (isZh ? '常驻备用底座' : 'Standby Core')}</span>
                 </div>
                 <span class="${isConnected ? 'text-emerald-400 font-bold' : 'text-gray-400 font-medium'}">${isConnected ? (isZh ? `🛡️ 级联保护生效中 (${node.dependents_count} 个下游应用)` : `🛡️ Protected (${node.dependents_count} dependents)`) : (isZh ? '常驻备用组件' : 'Standby Component')}</span>
@@ -1065,7 +1159,7 @@
                 ${isConnected ? `
                   <span class="text-emerald-300 font-semibold">${isZh ? '强依赖此环境的下游关键软件与理由:' : 'Dependent Applications & Reasons:'}</span>
                   <ul class="list-disc pl-5 text-gray-200 space-y-1 mt-1">
-                    ${downstreams.map(d => `<li><span class="text-white font-bold">${d.downstream_name}</span>: <span class="text-gray-300">${d.description}</span></li>`).join('')}
+                    ${downstreams.map(d => `<li><span class="text-white font-bold">${esc(d.downstream_name)}</span>: <span class="text-gray-300">${esc(d.description)}</span></li>`).join('')}
                   </ul>
                 ` : `
                   <p class="text-gray-500 italic pl-1">${isZh ? '暂无检测到的下游应用显式依赖，属于系统常驻或备用硬件/开发组件。' : 'No direct downstream dependents detected. Standby system/driver component.'}</p>
@@ -1082,7 +1176,7 @@
     async function reloadRules() {
       const isZh = (currentLang === 'zh');
       try {
-        const res = await fetch('/api/rules/reload', { method: 'POST' });
+        const res = await apiPost('/api/rules/reload', {});
         const data = await res.json();
         alert(data.message || (isZh ? '外部规则库热重载成功！' : 'Rules hot-reloaded successfully!'));
         await fetchApps();
@@ -1109,8 +1203,8 @@
         container.innerHTML = backups.map(b => `
           <div class="bg-[#0d1117] border border-[#30363d] rounded-xl p-3 flex items-center justify-between text-xs">
             <div class="space-y-0.5">
-              <span class="font-mono text-white font-bold">${b.name}</span>
-              <p class="text-[11px] text-gray-400">${isZh ? '创建于' : 'Created'}: ${b.created_at} · ${isZh ? '大小' : 'Size'}: ${b.size_bytes} ${isZh ? '字节' : 'bytes'}</p>
+              <span class="font-mono text-white font-bold">${esc(b.name)}</span>
+              <p class="text-[11px] text-gray-400">${isZh ? '创建于' : 'Created'}: ${esc(b.created_at)} · ${isZh ? '大小' : 'Size'}: ${esc(b.size_bytes)} ${isZh ? '字节' : 'bytes'}</p>
             </div>
             <span class="px-2 py-1 bg-emerald-950 text-emerald-400 rounded text-[10px] border border-emerald-800">${isZh ? '已安全归档' : 'Archived'}</span>
           </div>
@@ -1122,11 +1216,7 @@
 
     async function createSystemRestorePoint() {
       try {
-        const res = await fetch('/api/safety/create-restore-point', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ description: 'AppAsset Sentinel 手动创建安全快照' })
-        });
+        const res = await apiPost('/api/safety/create-restore-point', { description: 'AppAsset Sentinel safety snapshot' });
         const r = await res.json();
         alert(r.message || 'Done');
         await loadSafetyStatus();
@@ -1143,11 +1233,7 @@
       document.getElementById('modal-content').innerHTML = `<div class="text-center py-8 text-gray-400 text-xs">Loading...</div>`;
 
       try {
-        const res = await fetch('/api/uninstall/plan', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ software_id: appId, preserve_data: true })
-        });
+        const res = await apiPost('/api/uninstall/plan', { software_id: appId, preserve_data: true });
         const plan = await res.json();
         currentPlan = plan;
         renderModalPlan(plan);
@@ -1162,8 +1248,8 @@
       const app = plan.software || {};
       const isZh = (currentLang === 'zh');
 
-      document.getElementById('modal-app-name').innerText = app.display_name || (isZh ? '软件卸载决策面板' : 'Uninstall Decision Panel');
-      document.getElementById('modal-app-sub').innerText = `${app.publisher || (isZh ? '未知发布商' : 'Unknown')} · v${app.display_version || '1.0'}`;
+      document.getElementById('modal-app-name').textContent = app.display_name || (isZh ? '软件卸载决策面板' : 'Uninstall Decision Panel');
+      document.getElementById('modal-app-sub').textContent = `${app.publisher || (isZh ? '未知发布商' : 'Unknown')} · v${app.display_version || '1.0'}`;
 
       // Case 1: Intercepted by Safety Fuse
       if (plan.is_blocked) {
@@ -1206,7 +1292,7 @@
               <div class="bg-gray-900/60 border border-gray-800 rounded-xl p-3 text-xs text-gray-300 space-y-1">
                 <span class="font-semibold text-gray-400">${isZh ? '当前依赖此底座的关键应用：' : 'Direct Downstream Applications:'}</span>
                 <ul class="list-disc pl-5 mt-1 space-y-1">
-                  ${plan.dependents.map(d => `<li><span class="text-white font-medium">${d.dependent_name}</span> (${d.description})</li>`).join('')}
+                  ${plan.dependents.map(d => `<li><span class="text-white font-medium">${esc(d.dependent_name)}</span> (${esc(d.description)})</li>`).join('')}
                 </ul>
               </div>
             ` : ''}
@@ -1265,7 +1351,7 @@
             </div>
             <p class="text-gray-300">${isZh ? '以下目录包含珍贵模型文件或工程数据，系统已自动加锁保护，绝不误杀：' : 'The following directories contain precious model weights or project drafts and are strictly protected:'}</p>
             <ul class="list-disc pl-5 text-gray-400">
-              ${preserved.map(p => `<li>${p.path}</li>`).join('')}
+              ${preserved.map(p => `<li>${esc(p.path)}</li>`).join('')}
             </ul>
           </div>
         ` : ''}
@@ -1281,8 +1367,8 @@
             ${residues.map(r => `
               <div class="bg-[#0d1117] border border-[#30363d]/60 rounded-lg p-2.5 flex items-center justify-between text-xs">
                 <div class="space-y-0.5 truncate max-w-[70%]">
-                  <p class="text-gray-200 font-mono truncate" title="${r.path}">${r.path}</p>
-                  <p class="text-[11px] text-gray-400">${r.reason}</p>
+                  <p class="text-gray-200 font-mono truncate" title="${escAttr(r.path)}">${esc(r.path)}</p>
+                  <p class="text-[11px] text-gray-400">${esc(r.reason)}</p>
                 </div>
                 <div>
                   ${r.is_preserved_data ? 
@@ -1299,14 +1385,19 @@
       `;
 
       actions.innerHTML = `
-        <button onclick="executePlanSimulate()" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-bold transition flex items-center space-x-1.5 shadow-lg shadow-indigo-600/30">
+        <button type="button" onclick="executePlanSimulate()" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-bold transition flex items-center space-x-1.5 shadow-lg shadow-indigo-600/30">
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
           <span>${isZh ? '开始无害模拟演练 (0风险验证)' : 'Simulate Workflow (0 Risk)'}</span>
         </button>
-        <button onclick="executePlanLive()" class="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-xs font-bold transition flex items-center space-x-1.5 shadow-lg shadow-rose-600/30">
-          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
-          <span>${isZh ? '执行彻底卸载与深度清除' : 'Execute Clean Uninstall'}</span>
-        </button>
+        ${plan.live_uninstall_supported ? `
+          <button type="button" onclick="executePlanLive()" class="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-xs font-bold transition flex items-center space-x-1.5 shadow-lg shadow-rose-600/30">
+            <span>${isZh ? '执行彻底卸载与深度清除' : 'Execute Clean Uninstall'}</span>
+          </button>
+        ` : `
+          <span class="text-[11px] text-amber-300/90 max-w-[55%] leading-relaxed text-right">
+            ${isZh ? '真实卸载当前未开放：' : 'Live uninstall is not available: '}${esc(plan.live_uninstall_reason || '')}
+          </span>
+        `}
       `;
     }
 
@@ -1321,11 +1412,8 @@
     async function executePlanSimulate() {
       if (!currentPlan) return;
       try {
-        const res = await fetch('/api/uninstall/execute', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ plan: currentPlan, simulate: true })
-        });
+        // AUDIT W03: only the server-held plan id is sent back, never a plan document.
+        const res = await apiPost('/api/uninstall/execute', { plan_id: currentPlan.plan_id, simulate: true });
         const result = await res.json();
         alert(`[Simulation Report]\n\n${result.message}\nAudit ID: ${result.audit_id}`);
       } catch(e) {
@@ -1343,11 +1431,7 @@
       if (!confirm(confirmMsg)) return;
 
       try {
-        const res = await fetch('/api/uninstall/force-clean', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ software_id: currentPlan.software.id })
-        });
+        const res = await apiPost('/api/uninstall/force-clean', { software_id: currentPlan.software.id });
         const r = await res.json();
         if (r.success) {
           alert(isZh ? '软件及其残留已彻底深度清理完毕！' : 'Software and leftovers cleaned completely.');
@@ -1372,7 +1456,7 @@
       btn.disabled = true;
 
       try {
-        await fetch('/api/scan', { method: 'POST' });
+        await apiPost('/api/scan', {});
         await loadOverview();
         await fetchApps();
         if (currentView === 'migration') await loadVaultDashboard();
@@ -1407,9 +1491,25 @@
     // Initialize on page load
     window.addEventListener('DOMContentLoaded', async () => {
       applyTranslations();
+      await initSession();
       await loadOverview();
       await fetchApps();
+      await loadPolicyPosture();
     });
+
+    // AUDIT W01: show the user exactly which writes are open right now.
+    async function loadPolicyPosture() {
+      try {
+        const res = await fetch('/api/policy');
+        const data = await res.json();
+        const open = (data.capabilities || []).filter(c => c.allows_mutation).map(c => c.capability);
+        const closed = (data.capabilities || []).filter(c => !c.allows_mutation && c.state !== 'Enabled').map(c => c.capability);
+        console.info('[Sentinel] 写入能力已开放:', open.join(', ') || '(无)');
+        console.info('[Sentinel] 写入能力未开放:', closed.join(', ') || '(无)');
+      } catch (e) {
+        console.error('Failed to load capability posture:', e);
+      }
+    }
   </script>
 </body>
 </html>

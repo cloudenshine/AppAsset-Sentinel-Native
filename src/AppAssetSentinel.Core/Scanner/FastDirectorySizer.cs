@@ -1,11 +1,10 @@
-using System.Runtime.InteropServices;
 using AppAssetSentinel.Core.Models;
 
 namespace AppAssetSentinel.Core.Scanner;
 
 public static class FastDirectorySizer
 {
-    // Check if directory is a Reparse Point (Junction or Symlink)
+    /// <summary>Check if a path is a Reparse Point (Junction or Symlink).</summary>
     public static bool IsReparsePoint(string path)
     {
         try
@@ -20,7 +19,7 @@ public static class FastDirectorySizer
         }
     }
 
-    // Inspect Junction Target Path using Win32 API
+    /// <summary>Inspect a Junction's target path.</summary>
     public static JunctionInfo GetJunctionInfo(string path)
     {
         var info = new JunctionInfo();
@@ -39,7 +38,6 @@ public static class FastDirectorySizer
                 return info;
             }
 
-            // In .NET, LinkTarget property is available on FileSystemInfo
             info.IsJunction = true;
             info.TargetPath = di.LinkTarget ?? string.Empty;
             return info;
@@ -53,20 +51,41 @@ public static class FastDirectorySizer
     }
 
     /// <summary>
-    /// Calculates directory total size in bytes safely.
-    /// Traversal will NEVER cross ReparsePoints (Junctions/Symlinks) to avoid infinite recursion cycles.
-    /// Max depth limit: 64 levels.
+    /// AUDIT A22: the old API returned a bare long, so a partial walk (denied folders,
+    /// skipped reparse points, depth limits) was indistinguishable from a complete total
+    /// and could be advertised as a "real physical space" figure.
     /// </summary>
-    public static long CalculateDirectorySize(string path, int maxDepth = 64)
+    public sealed record DirectorySizeResult
+    {
+        public long Bytes { get; init; }
+        public long FileCount { get; init; }
+        public long SkippedDirectories { get; init; }
+        public long SkippedFiles { get; init; }
+        public bool HitDepthLimit { get; init; }
+
+        /// <summary>True only when every entry beneath the root contributed to Bytes.</summary>
+        public bool Complete => SkippedDirectories == 0 && SkippedFiles == 0 && !HitDepthLimit;
+    }
+
+    public static DirectorySizeResult CalculateDirectorySizeDetailed(string path, int maxDepth = 64)
     {
         if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path))
-            return 0;
+        {
+            return new DirectorySizeResult();
+        }
 
-        // If root path itself is a reparse point, do not count foreign drive
+        // A reparse-point root belongs to another volume; counting it would double-count.
         if (IsReparsePoint(path))
-            return 0;
+        {
+            return new DirectorySizeResult { SkippedDirectories = 1 };
+        }
 
         long totalSize = 0;
+        long fileCount = 0;
+        long skippedDirs = 0;
+        long skippedFiles = 0;
+        bool depthLimit = false;
+
         var visitedDirectories = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var stack = new Stack<(string dir, int depth)>();
         stack.Push((path, 0));
@@ -74,7 +93,12 @@ public static class FastDirectorySizer
         while (stack.Count > 0)
         {
             var (currentDir, depth) = stack.Pop();
-            if (depth > maxDepth) continue;
+
+            if (depth > maxDepth)
+            {
+                depthLimit = true;
+                continue;
+            }
 
             string normalizedDir;
             try
@@ -83,40 +107,48 @@ public static class FastDirectorySizer
             }
             catch
             {
+                skippedDirs++;
                 continue;
             }
 
             if (!visitedDirectories.Add(normalizedDir))
+            {
                 continue; // Cycle detected, skip
+            }
 
-            // Get files
             try
             {
                 var dirInfo = new DirectoryInfo(currentDir);
+
                 foreach (var file in dirInfo.EnumerateFiles())
                 {
                     try
                     {
-                        // Reparse points for individual files (e.g. cloud placeholders / symlinks)
+                        // Reparse points for individual files (cloud placeholders / symlinks)
                         if ((file.Attributes & FileAttributes.ReparsePoint) != FileAttributes.ReparsePoint)
                         {
                             totalSize += file.Length;
+                            fileCount++;
+                        }
+                        else
+                        {
+                            skippedFiles++;
                         }
                     }
                     catch
                     {
-                        // File locked or permission denied
+                        skippedFiles++;
                     }
                 }
 
-                // Get subdirectories
                 foreach (var subDir in dirInfo.EnumerateDirectories())
                 {
                     try
                     {
-                        // Crucial Defense: Skip reparse points (NTFS Junctions / Symlinks)
+                        // Crucial defence: never traverse reparse points; their bytes live elsewhere.
                         if ((subDir.Attributes & FileAttributes.ReparsePoint) == FileAttributes.ReparsePoint)
                         {
+                            skippedDirs++;
                             continue;
                         }
 
@@ -124,16 +156,34 @@ public static class FastDirectorySizer
                     }
                     catch
                     {
-                        // Access denied
+                        skippedDirs++;
                     }
                 }
             }
             catch
             {
-                // Permission or IO exception
+                skippedDirs++;
             }
         }
 
-        return totalSize;
+        return new DirectorySizeResult
+        {
+            Bytes = totalSize,
+            FileCount = fileCount,
+            SkippedDirectories = skippedDirs,
+            SkippedFiles = skippedFiles,
+            HitDepthLimit = depthLimit
+        };
+    }
+
+    /// <summary>
+    /// Calculates directory total size in bytes safely. Traversal will NEVER cross
+    /// ReparsePoints (Junctions/Symlinks) to avoid infinite recursion cycles.
+    /// Max depth: 64 levels. Prefer CalculateDirectorySizeDetailed when the caller must
+    /// know whether the figure is complete.
+    /// </summary>
+    public static long CalculateDirectorySize(string path, int maxDepth = 64)
+    {
+        return CalculateDirectorySizeDetailed(path, maxDepth).Bytes;
     }
 }

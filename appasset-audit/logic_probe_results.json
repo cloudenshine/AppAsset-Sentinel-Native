@@ -1,0 +1,80 @@
+{
+  "baseline_commit": "f7c9dbf7a29b55cf7fa3d832bf3833ac67ee6e75",
+  "verification_type": "isolated_logic_counterexamples",
+  "native_windows_execution": false,
+  "csharp_app_execution": false,
+  "note": "These probes demonstrate the reviewed predicates; they are not native acceptance tests.",
+  "counterexamples": 6,
+  "results": [
+    {
+      "id": "requested_target_leaf_ignored",
+      "source": "C:\\Users\\Shine\\.ollama\\models",
+      "requested": "D:\\AIStack_Vault\\models\\ollama",
+      "actual_by_reviewed_composition": "D:\\AIStack_Vault\\models\\models",
+      "defect_observed": true
+    },
+    {
+      "id": "equal_timestamp_different_content",
+      "lost_unique_version": [
+        "anchor"
+      ],
+      "remaining_file": "UNIQUE-VAULT!",
+      "defect_observed": true
+    },
+    {
+      "id": "newer_anchor_overwrites_vault",
+      "lost_unique_version": [
+        "vault"
+      ],
+      "remaining_file": "UNIQUE-ANCHOR",
+      "defect_observed": true
+    },
+    {
+      "id": "total_bytes_is_not_integrity",
+      "predicate_accepts": true,
+      "contents_equal": false,
+      "defect_observed": true
+    },
+    {
+      "id": "inline_handler_path_corruption",
+      "original": "C:\\Tools\\ComfyUI\\models",
+      "handler": "openRelocateModal('C:\\Tools\\ComfyUI\\models')",
+      "received": "C:ToolsComfyUImodels",
+      "defect_observed": true
+    },
+    {
+      "id": "cycle_pruning_loses_dependency",
+      "original_edges": [
+        [
+          "A",
+          "B"
+        ],
+        [
+          "B",
+          "C"
+        ],
+        [
+          "C",
+          "A"
+        ]
+      ],
+      "remaining_edges": [
+        [
+          "A",
+          "B"
+        ],
+        [
+          "B",
+          "C"
+        ]
+      ],
+      "removed_edges": [
+        [
+          "C",
+          "A"
+        ]
+      ],
+      "defect_observed": true
+    }
+  ]
+}

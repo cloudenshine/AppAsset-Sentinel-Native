@@ -4,12 +4,24 @@
   <img src="https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-0078D6?logo=windows&logoColor=white" alt="Windows" />
   <img src="https://img.shields.io/badge/.NET-9.0%20Native-512BD4?logo=dotnet&logoColor=white" alt=".NET 9" />
   <img src="https://img.shields.io/badge/UI-Photino%20WebView2-blue" alt="Photino" />
-  <img src="https://img.shields.io/badge/Tests-28%20Passed-emerald" alt="Tests" />
+  <img src="https://img.shields.io/badge/Tests-69%20Passed-emerald" alt="Tests" />
   <img src="https://img.shields.io/badge/License-Apache%202.0-orange.svg" alt="License" />
 </p>
 
 > **面向开发者与本地 AI 时代的 Windows 智能软件资产全生命周期控制台 · 原生轻量版**  
 > 彻底解决传统清理软件在“大模型爆炸、环境依赖冲突、C盘爆满断链”面前的认知盲区。基于 **C# (.NET 9) + Win32 原生调用 + Photino (WebView2)** 重构，集全盘真实遥测、全卷资产仓库、双向防漂移锁死、拓扑防爆护盾与系统快照于一体。
+
+> **⚠️ 当前版本状态：R0 安全观察版（只读）**
+>
+> 本版本**只开放观察、展示与计划预览**。真实迁移、自动愈合、强制清理、真实卸载、
+> 链接解除与还原点创建**均未开放**；界面不会展示这些动作，接口会返回明确的
+> `Unsupported` / `Blocked` 与原因，绝不返回成功。
+>
+> 运行中可随时访问 `http://127.0.0.1:8765/api/policy` 查看当前真实能力姿态。
+> 整改依据与未完成项见 [`appasset-audit/RESPONSE.md`](appasset-audit/RESPONSE.md)。
+>
+> 下文的「双向锁死 / 一键平移 / 自动愈合 / 彻底卸载」描述的是**目标能力与设计意图**，
+> 不代表当前可用。开放条件见审计整改的 R1/R2/R3 发布门槛。
 
 ---
 

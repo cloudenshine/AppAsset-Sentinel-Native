@@ -47,6 +47,15 @@ public class SemanticRule
     public Regex? CompiledRegex { get; set; }
 }
 
+/// <summary>Outcome of validating a candidate rule snapshot before it is committed.</summary>
+public sealed class RuleLoadResult
+{
+    public bool Succeeded { get; init; }
+    public string Error { get; init; } = string.Empty;
+    public string SourcePath { get; init; } = string.Empty;
+    public List<SemanticRule> Rules { get; init; } = new();
+}
+
 public class SemanticRuleEngine
 {
     private readonly List<SemanticRule> _rules = new();
@@ -69,6 +78,121 @@ public class SemanticRuleEngine
             current = current.Parent;
         }
         return null;
+    }
+
+    /// <summary>
+    /// Parses and fully validates a candidate rule snapshot without touching the live engine
+    /// (AUDIT A17). Callers validate first, then commit with <see cref="ReplaceRules"/>,
+    /// so a broken file can never remove protections that were already known good.
+    /// </summary>
+    public static RuleLoadResult TryLoadCandidate(string? customPath = null)
+    {
+        string resolvedPath;
+
+        if (!string.IsNullOrEmpty(customPath) && File.Exists(customPath))
+        {
+            resolvedPath = customPath;
+        }
+        else
+        {
+            var rulesDir = FindRulesDirectory();
+            if (rulesDir == null)
+            {
+                return new RuleLoadResult { Succeeded = false, Error = "未找到规则目录（rules/app_semantics.json）。" };
+            }
+
+            resolvedPath = Path.Combine(rulesDir, "app_semantics.json");
+            if (!File.Exists(resolvedPath))
+            {
+                return new RuleLoadResult { Succeeded = false, Error = $"规则文件不存在：{resolvedPath}" };
+            }
+        }
+
+        string jsonContent;
+        try
+        {
+            jsonContent = File.ReadAllText(resolvedPath);
+        }
+        catch (Exception ex)
+        {
+            return new RuleLoadResult { Succeeded = false, Error = $"无法读取规则文件：{ex.Message}" };
+        }
+
+        var options = new JsonSerializerOptions
+        {
+            PropertyNameCaseInsensitive = true,
+            PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower
+        };
+
+        List<SemanticRule>? parsed;
+        try
+        {
+            parsed = JsonSerializer.Deserialize<List<SemanticRule>>(jsonContent, options);
+        }
+        catch (JsonException ex)
+        {
+            return new RuleLoadResult { Succeeded = false, Error = $"规则 JSON 解析失败：{ex.Message}" };
+        }
+
+        if (parsed == null || parsed.Count == 0)
+        {
+            return new RuleLoadResult { Succeeded = false, Error = "规则快照为空，拒绝替换现有规则。" };
+        }
+
+        var validated = new List<SemanticRule>();
+        int compileFailures = 0;
+
+        foreach (var rule in parsed)
+        {
+            if (string.IsNullOrWhiteSpace(rule.Pattern))
+            {
+                return new RuleLoadResult { Succeeded = false, Error = "存在缺少 pattern 的规则条目。" };
+            }
+
+            try
+            {
+                // Bound the work a pathological pattern can do (AUDIT A17).
+                rule.CompiledRegex = new Regex(rule.Pattern,
+                    RegexOptions.IgnoreCase | RegexOptions.Compiled,
+                    TimeSpan.FromMilliseconds(250));
+                validated.Add(rule);
+            }
+            catch (ArgumentException ex)
+            {
+                compileFailures++;
+                if (compileFailures > 3)
+                {
+                    return new RuleLoadResult { Succeeded = false, Error = $"过多非法正则（示例：{ex.Message}）" };
+                }
+            }
+        }
+
+        if (validated.Count == 0)
+        {
+            return new RuleLoadResult { Succeeded = false, Error = "没有任何规则通过正则编译校验。" };
+        }
+
+        return new RuleLoadResult
+        {
+            Succeeded = true,
+            Rules = validated,
+            SourcePath = resolvedPath
+        };
+    }
+
+    /// <summary>Swaps in a previously validated snapshot. Old rules are never cleared first.</summary>
+    public void ReplaceRules(List<SemanticRule> rules)
+    {
+        if (rules == null || rules.Count == 0)
+        {
+            return;
+        }
+
+        lock (_rules)
+        {
+            _rules.Clear();
+            _rules.AddRange(rules);
+        }
     }
 
     public void LoadRules(string? customPath = null)
@@ -111,7 +235,7 @@ public class SemanticRuleEngine
                         {
                             try
                             {
-                                r.CompiledRegex = new Regex(r.Pattern, RegexOptions.IgnoreCase | RegexOptions.Compiled);
+                                r.CompiledRegex = new Regex(r.Pattern, RegexOptions.IgnoreCase | RegexOptions.Compiled, TimeSpan.FromMilliseconds(250));
                                 _rules.Add(r);
                             }
                             catch { }

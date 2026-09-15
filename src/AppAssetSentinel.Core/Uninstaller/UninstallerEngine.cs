@@ -1,10 +1,8 @@
-using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using Microsoft.Win32;
 using AppAssetSentinel.Core.Models;
+using AppAssetSentinel.Core.Policy;
 using AppAssetSentinel.Core.Shield;
-using AppAssetSentinel.Core.Safety;
 
 namespace AppAssetSentinel.Core.Uninstaller;
 
@@ -31,6 +29,10 @@ public class DependentItem
 
 public class UninstallPlanResult
 {
+    [JsonPropertyName("plan_id")]
+    public string PlanId { get; set; } = string.Empty;
+
+    /// <summary>False when the request could not even be turned into a plan.</summary>
     [JsonPropertyName("success")]
     public bool Success { get; set; } = true;
 
@@ -52,9 +54,6 @@ public class UninstallPlanResult
     [JsonPropertyName("dependents")]
     public List<DependentItem> Dependents { get; set; } = new();
 
-    [JsonPropertyName("plan_id")]
-    public string PlanId { get; set; } = "plan_" + Guid.NewGuid().ToString("N")[..8];
-
     [JsonPropertyName("software")]
     public SoftwareAsset? Software { get; set; }
 
@@ -75,11 +74,28 @@ public class UninstallPlanResult
 
     [JsonPropertyName("summary")]
     public PlanSummary Summary { get; set; } = new();
+
+    /// <summary>Real execution posture for this plan, from the single capability gate (W01).</summary>
+    [JsonPropertyName("live_uninstall_supported")]
+    public bool LiveUninstallSupported { get; set; } = false;
+
+    [JsonPropertyName("live_uninstall_reason")]
+    public string LiveUninstallReason { get; set; } = string.Empty;
 }
 
-public class UninstallerEngine
+/// <summary>
+/// Plans and executes uninstall operations. Under W01 no real uninstall exists yet:
+/// planning is open, live execution reports <see cref="OperationStatus.Unsupported"/>
+/// and <see cref="ForceClean"/> no longer exists as a callable shortcut (A01/A02).
+/// </summary>
+public static class UninstallerEngine
 {
-    public static UninstallPlanResult PlanUninstall(string softwareId, List<SoftwareAsset> allApps, DependencyShield shield, bool preserveData = true)
+    public static UninstallPlanResult PlanUninstall(
+        string softwareId,
+        List<SoftwareAsset> allApps,
+        DependencyShield shield,
+        CapabilityPolicy policy,
+        bool preserveData = true)
     {
         var app = allApps.FirstOrDefault(a => a.Id == softwareId);
         if (app == null)
@@ -91,31 +107,27 @@ public class UninstallerEngine
             };
         }
 
-        // 1. Dependency Safety Fuse Check
         var safety = shield.EvaluateUninstallSafety(softwareId, allApps);
-
-        // 2. Silent Command Inference
         var silent = FingerprintEngine.IdentifyAndMakeSilent(app);
-
-        // 3. Residue Radar Scan
         var allResidues = ResidueRadar.ScanResidues(app, preserveData);
-        var autoClean = allResidues.Where(r => r.ConfidenceRating == "HIGH_CONFIDENCE_SAFE" && !r.IsPreservedData).ToList();
+        var autoClean = allResidues
+            .Where(r => r.ConfidenceRating == "HIGH_CONFIDENCE_SAFE" && !r.IsPreservedData)
+            .ToList();
 
-        var dependents = safety.DependentApps.Select(d => new DependentItem
-        {
-            DependentName = d,
-            Description = "下游依赖"
-        }).ToList();
+        var liveDecision = policy.Check(Capability.UninstallLive);
 
         return new UninstallPlanResult
         {
+            PlanId = "plan_" + Guid.NewGuid().ToString("N")[..12],
             Success = true,
             IsBlocked = !safety.CanUninstall,
             AllowOverride = safety.AllowOverride,
             BlockReason = safety.BlockReason,
             CascadeImpacts = safety.CascadeImpacts,
             PrerequisiteAdvice = safety.PrerequisiteAdvice,
-            Dependents = dependents,
+            Dependents = safety.DependentApps
+                .Select(d => new DependentItem { DependentName = d, Description = "下游依赖" })
+                .ToList(),
             Software = app,
             SilentInfo = silent,
             PreserveData = preserveData,
@@ -127,91 +139,91 @@ public class UninstallerEngine
                 TotalResidueCount = allResidues.Count,
                 AutoCleanCount = autoClean.Count,
                 PreservedDataCount = allResidues.Count(r => r.IsPreservedData)
-            }
+            },
+            LiveUninstallSupported = liveDecision.IsAllowed,
+            LiveUninstallReason = liveDecision.Reason
         };
     }
 
-    public static object ExecutePlan(JsonElement planDoc, bool simulate)
+    /// <summary>
+    /// Executes (or simulates) a plan. The client may only reference a plan by id that the
+    /// server itself stored; an arbitrary client-supplied plan document is never executed.
+    /// </summary>
+    public static OperationOutcome ExecutePlan(
+        CapabilityPolicy policy,
+        UninstallPlanResult? storedPlan,
+        string requestedPlanId,
+        bool simulate)
     {
-        string appName = "未知程序";
-        int cleanCount = 0;
+        if (string.IsNullOrWhiteSpace(requestedPlanId))
+        {
+            return OperationOutcome.Failed(Capability.UninstallSimulate, "missing_plan_id",
+                "请求缺少 plan_id；服务端只执行自己生成的计划。");
+        }
+
+        if (storedPlan == null || !string.Equals(storedPlan.PlanId, requestedPlanId, StringComparison.Ordinal))
+        {
+            // AUDIT W03: unknown / expired / tampered plans must be rejected.
+            return OperationOutcome.Failed(Capability.UninstallSimulate, "unknown_plan",
+                $"服务端不存在 plan_id = {requestedPlanId} 的已授权计划，请求被拒绝。");
+        }
+
+        if (storedPlan.IsBlocked)
+        {
+            return OperationOutcome.Blocked(Capability.UninstallSimulate,
+                $"该计划已被依赖护盾拦截：{storedPlan.BlockReason}");
+        }
+
+        string appName = storedPlan.Software?.DisplayName ?? "未知程序";
+        int cleanCount = storedPlan.Summary.AutoCleanCount;
+
+        if (simulate)
+        {
+            // Honest simulation: no mutation, no audit id pretending to be a live run.
+            return OperationOutcome.Simulated(Capability.UninstallSimulate,
+                $"演练完成：若执行将处理「{appName}」的 {cleanCount} 项残留（本次未修改任何文件或注册表）。",
+                new[]
+                {
+                    $"指纹: {storedPlan.SilentInfo?.InstallerType ?? "unknown"}",
+                    $"命令预览: {storedPlan.SilentInfo?.CommandDisplay ?? "(无)"}",
+                    $"计划号: {storedPlan.PlanId}"
+                });
+        }
+
+        var decision = policy.Check(Capability.UninstallLive);
+        return decision.IsAllowed
+            ? OperationOutcome.Unsupported(Capability.UninstallLive,
+                "真实卸载执行器尚未实现，未做任何修改。")
+            : OperationOutcome.Unsupported(Capability.UninstallLive, decision.Reason);
+    }
+
+    /// <summary>
+    /// Previously performed an unguarded recursive delete (AUDIT A02). It now refuses:
+    /// every destructive path must go through the same plan / policy / execution gate.
+    /// </summary>
+    public static OperationOutcome ForceClean(CapabilityPolicy policy, SoftwareAsset? app)
+    {
+        var decision = policy.Check(Capability.ForceClean);
+        return OperationOutcome.Unsupported(Capability.ForceClean, decision.Reason);
+    }
+}
+
+/// <summary>Rejects any client-supplied plan document that the server did not author.</summary>
+public static class PlanRequestGuard
+{
+    public static string? ExtractPlanId(JsonElement body)
+    {
         try
         {
-            if (planDoc.TryGetProperty("software", out var softEl) && softEl.TryGetProperty("display_name", out var nameEl))
+            if (body.ValueKind == JsonValueKind.Object &&
+                body.TryGetProperty("plan_id", out var idEl) &&
+                idEl.ValueKind == JsonValueKind.String)
             {
-                appName = nameEl.GetString() ?? appName;
-            }
-            if (planDoc.TryGetProperty("summary", out var sumEl) && sumEl.TryGetProperty("auto_clean_count", out var cntEl))
-            {
-                cleanCount = cntEl.GetInt32();
+                return idEl.GetString();
             }
         }
         catch { }
 
-        string auditId = "audit_" + Guid.NewGuid().ToString("N")[..12];
-
-        if (simulate)
-        {
-            return new
-            {
-                executed = true,
-                mode = "simulation",
-                audit_id = auditId,
-                message = $"已成功完成「{appName}」的卸载演练，预计清理 {cleanCount} 项残留（包含文件与注册表项）。"
-            };
-        }
-
-        // Live Execution
-        return new
-        {
-            executed = true,
-            mode = "live",
-            audit_id = auditId,
-            message = $"已成功完成「{appName}」的卸载与清理流程。"
-        };
-    }
-
-    public static bool ForceClean(SoftwareAsset app)
-    {
-        if (app == null) return false;
-
-        // Never delete critical system directories!
-        CriticalDirectoryGuard.AssertSafeToDelete(app.InstallLocation);
-
-        // 1. Remove Install Directory if exists and safe
-        if (!string.IsNullOrEmpty(app.InstallLocation) && Directory.Exists(app.InstallLocation))
-        {
-            try
-            {
-                Directory.Delete(app.InstallLocation, true);
-            }
-            catch { }
-        }
-
-        // 2. Remove Registry Uninstall Key
-        if (!string.IsNullOrEmpty(app.RegistryKeyPath))
-        {
-            try
-            {
-                DeleteRegistryKey(app.RegistryKeyPath);
-            }
-            catch { }
-        }
-
-        return true;
-    }
-
-    private static void DeleteRegistryKey(string fullKeyPath)
-    {
-        var parts = fullKeyPath.Split('\\');
-        if (parts.Length < 4) return;
-
-        var hive = parts[0].ToUpperInvariant();
-        var subKey = string.Join('\\', parts.Skip(1).Take(parts.Length - 2));
-        var leaf = parts.Last();
-
-        var baseKey = hive.Contains("LOCALMACHINE") ? Registry.LocalMachine : Registry.CurrentUser;
-        using var parent = baseKey.OpenSubKey(subKey, true);
-        parent?.DeleteSubKeyTree(leaf, false);
+        return null;
     }
 }

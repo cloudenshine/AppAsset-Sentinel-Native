@@ -24,3 +24,9 @@ vault_registry.json
 .DS_Store
 Thumbs.db
 desktop.ini
+
+## Audit run forensics (machine-specific)
+appasset-audit/*.polluted-*.json
+appasset-audit/*.polluted-*.txt
+*.polluted-*.json
+*.polluted-*.txt

@@ -93,8 +93,12 @@ public class TestPhase2_JunctionAndAiAssets : IDisposable
     }
 
     [Fact]
-    public async Task TestAtomicMigrationWorkflow()
+    public async Task TestMigrationWorkflowOnSingleVolume()
     {
+        // AUDIT A27: this exercises the copy/switch workflow on ONE volume (two directories
+        // under the same temp root). It is deliberately NOT presented as cross-volume
+        // evidence; genuine cross-volume verification requires two isolated test volumes
+        // and is tracked separately as an environment-gated acceptance run.
         var sourceDir = Path.Combine(_testRoot, "SourceModels");
         Directory.CreateDirectory(sourceDir);
 
@@ -104,6 +108,9 @@ public class TestPhase2_JunctionAndAiAssets : IDisposable
         var targetParent = Path.Combine(_testRoot, "TargetDriveStore");
         Directory.CreateDirectory(targetParent);
 
+        // AUDIT A27: refuse to look successful when the capability is unavailable.
+        TestEnvironment.RequireJunctionSupport();
+
         var task = await JunctionEngine.MigrateDirectoryAsync(
             sourceDir,
             targetParent,
@@ -111,18 +118,20 @@ public class TestPhase2_JunctionAndAiAssets : IDisposable
             assetName: "TestModelSet"
         );
 
-        Assert.Equal(MigrationStatus.Completed, task.Status);
+        Assert.True(task.Status == MigrationStatus.Completed,
+            $"迁移未完成：{task.Error} {task.StatusMessage}");
+
         Assert.True(Directory.Exists(sourceDir));
 
-        // Source dir should now be an NTFS Junction!
+        // Source dir should now be an NTFS Junction.
         var info = FastDirectorySizer.GetJunctionInfo(sourceDir);
-        Assert.True(info.IsJunction);
+        Assert.True(info.IsJunction, "完成迁移后源路径必须是重解析点");
 
-        // Target path should hold the actual files
+        // Target path should hold the actual files.
         Assert.True(Directory.Exists(task.TargetPath));
         Assert.True(File.Exists(Path.Combine(task.TargetPath, "model.safetensors")));
 
-        // Reading through the source junction must work seamlessly
+        // Reading through the source junction must work seamlessly.
         var readThrough = File.ReadAllBytes(Path.Combine(sourceDir, "model.safetensors"));
         Assert.Equal(2 * 1024 * 1024, readThrough.Length);
     }

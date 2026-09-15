@@ -204,11 +204,15 @@ public class Win32RegistryScanner
 
                             if (calculateDiskSize && !asset.IsJunction)
                             {
-                                var realSize = FastDirectorySizer.CalculateDirectorySize(asset.InstallLocation);
-                                if (realSize > 0)
+                                // AUDIT A22: keep the completeness signal instead of a bare number.
+                                var measured = FastDirectorySizer.CalculateDirectorySizeDetailed(asset.InstallLocation);
+                                if (measured.Bytes > 0)
                                 {
-                                    asset.EstimatedSizeBytes = realSize;
+                                    asset.EstimatedSizeBytes = measured.Bytes;
                                 }
+
+                                asset.SizeMeasurementComplete = measured.Complete;
+                                asset.SizeSkips = measured.SkippedDirectories + measured.SkippedFiles;
                             }
                         }
 

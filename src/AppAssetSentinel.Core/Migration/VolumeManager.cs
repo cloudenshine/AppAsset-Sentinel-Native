@@ -15,10 +15,14 @@ public class SystemVolume
     public string FileSystem { get; set; } = "NTFS";
 
     [JsonPropertyName("media_type")]
-    public string MediaType { get; set; } = "SATA HDD 💾 机械存储";
+    public string MediaType { get; set; } = "未知介质 (探测未完成)";
 
     [JsonPropertyName("is_ssd")]
     public bool IsSSD { get; set; } = false;
+
+    /// <summary>AUDIT A14: false when the physical-media probe did not report this volume.</summary>
+    [JsonPropertyName("media_known")]
+    public bool MediaKnown { get; set; } = false;
 
     [JsonPropertyName("bus_type")]
     public string BusType { get; set; } = "SATA";
@@ -140,21 +144,20 @@ public static class VolumeManager
                 double pct = d.TotalSize > 0 ? Math.Round(((double)d.AvailableFreeSpace / d.TotalSize) * 100, 1) : 0.0;
 
                 bool isSsd = false;
-                string mediaTypeStr = "SATA HDD 💾 机械存储";
-                string busTypeStr = "SATA";
+                string mediaTypeStr = "未知介质 (探测未完成)";
+                string busTypeStr = "Unknown";
+                bool mediaKnown = false;
 
                 if (_mediaCache.TryGetValue(letter, out var cached))
                 {
                     isSsd = cached.IsSSD;
                     mediaTypeStr = cached.MediaType;
                     busTypeStr = cached.BusType;
+                    mediaKnown = true;
                 }
-                else if (isSys || letter == "D")
-                {
-                    isSsd = true;
-                    mediaTypeStr = "NVMe SSD ⚡ 高速固态";
-                    busTypeStr = "NVMe";
-                }
+                // AUDIT A14: when the probe did not report this volume we must not invent
+                // "NVMe SSD". An unverified hardware claim would silently drive tiering
+                // recommendations, so the volume stays explicitly Unknown.
 
                 string role;
                 string labelLower = label.ToLowerInvariant();
@@ -163,25 +166,29 @@ public static class VolumeManager
                 {
                     role = "Windows 系统与运行时主盘";
                 }
+                else if (!mediaKnown)
+                {
+                    role = "通用存储卷（介质类型未确认，推荐前请人工核对）";
+                }
                 else if (isSsd)
                 {
-                    role = "AI 算力与大模型高速仓 (NVMe SSD 极速加载)";
+                    role = "高速存储卷 (固态介质，适合高频读写)";
                 }
                 else if (labelLower.Contains("doc") || letter == "E")
                 {
-                    role = "文本文档与社交通讯归档仓 (大容量机械存储)";
+                    role = "文本文档与社交通讯归档卷 (大容量机械存储)";
                 }
                 else if (labelLower.Contains("work") || labelLower.Contains("dev") || letter == "F")
                 {
-                    role = "软件工程与代码归档仓 (大容量机械存储)";
+                    role = "软件工程与代码归档卷 (大容量机械存储)";
                 }
                 else if (labelLower.Contains("vid") || labelLower.Contains("media") || letter == "G")
                 {
-                    role = "影视素材与渲染工程归档仓 (大容量机械存储)";
+                    role = "影视素材与渲染工程归档卷 (大容量机械存储)";
                 }
                 else
                 {
-                    role = "通用大容量存储仓";
+                    role = "通用大容量存储卷";
                 }
 
                 results.Add(new SystemVolume
@@ -191,6 +198,7 @@ public static class VolumeManager
                     FileSystem = d.DriveFormat,
                     MediaType = mediaTypeStr,
                     IsSSD = isSsd,
+                    MediaKnown = mediaKnown,
                     BusType = busTypeStr,
                     TotalSizeBytes = d.TotalSize,
                     FreeSizeBytes = d.AvailableFreeSpace,
@@ -215,11 +223,18 @@ public static class VolumeManager
             return (Path.Combine("C:\\", "AppAsset_Vault", assetName), "系统未检测到次级磁盘卷宗，默认回退至系统盘专属隔离仓。");
         }
 
-        // Fast SSD Volume (e.g. D:)
-        var ssdVolume = volumes.FirstOrDefault(v => v.IsSSD) ?? volumes.OrderByDescending(v => v.FreeSizeBytes).First();
+        // Fastest verified volume, else the emptiest one. Selection is a recommendation,
+        // never a hardware assertion (AUDIT A14).
+        var ssdVolume = volumes.FirstOrDefault(v => v.MediaKnown && v.IsSSD)
+                        ?? volumes.OrderByDescending(v => v.FreeSizeBytes).First();
 
-        // Large Capacity HDD Volume (e.g. E:, F:, G:)
-        var hddVolume = volumes.FirstOrDefault(v => !v.IsSSD) ?? volumes.OrderByDescending(v => v.FreeSizeBytes).First();
+        // Large capacity volume, preferring a known-mechanical one.
+        var hddVolume = volumes.FirstOrDefault(v => v.MediaKnown && !v.IsSSD)
+                        ?? volumes.OrderByDescending(v => v.FreeSizeBytes).First();
+
+        string Describe(SystemVolume v) => v.MediaKnown
+            ? $"{v.DriveLetter} 盘 ({v.MediaType})"
+            : $"{v.DriveLetter} 盘（介质类型未确认）";
 
         switch (assetCategory.ToLowerInvariant())
         {
@@ -228,7 +243,10 @@ public static class VolumeManager
             case "ai_compute":
                 return (
                     Path.Combine($"{ssdVolume.DriveLetter}:\\", "AIStack_Vault", "models", assetName),
-                    $"【智能存储分层策略】检测到属于大模型权重。已优先推荐 {ssdVolume.DriveLetter} 盘 ({ssdVolume.MediaType})，保障数十 GB 模型秒级加载进显存！"
+                    $"【存储分层建议】大模型权重适合放在读写最快的卷上。当前推荐 {Describe(ssdVolume)}，剩余 {ssdVolume.FreeFormatted}。"
+                        + (ssdVolume.MediaKnown && ssdVolume.IsSSD
+                            ? "该卷已确认是固态介质，有助于缩短模型加载时间。"
+                            : "该卷介质尚未确认，请人工核对后再决定。")
                 );
 
             case "dev_containers":
@@ -237,7 +255,10 @@ public static class VolumeManager
             case "dev_environment":
                 return (
                     Path.Combine($"{ssdVolume.DriveLetter}:\\", "AIStack_Vault", "containers", assetName),
-                    $"【智能存储分层策略】检测到属于容器虚拟硬盘/高频编译缓存。优先推荐 {ssdVolume.DriveLetter} 盘 ({ssdVolume.MediaType})，避免机械盘 4K 随机读写瓶颈卡死。"
+                    $"【存储分层建议】容器虚拟盘与编译缓存对随机读写敏感，推荐 {Describe(ssdVolume)}，剩余 {ssdVolume.FreeFormatted}。"
+                        + (ssdVolume.MediaKnown && ssdVolume.IsSSD
+                            ? "该卷已确认是固态介质。"
+                            : "该卷介质尚未确认，请人工核对。")
                 );
 
             case "social_docs":
@@ -246,7 +267,7 @@ public static class VolumeManager
                 var docVol = volumes.FirstOrDefault(v => v.Label.Contains("DOC", StringComparison.OrdinalIgnoreCase) || v.DriveLetter == "E") ?? hddVolume;
                 return (
                     Path.Combine($"{docVol.DriveLetter}:\\", "Documents_Vault", "Social_Chat", assetName),
-                    $"【智能存储分层策略】检测到属于历史聊天附件与媒体数据（冷数据）。推荐沉淀至 {docVol.DriveLetter} 盘 ({docVol.MediaType})，为高速固态节省宝贵空间！"
+                    $"【存储分层建议】聊天附件与会话媒体属于低频访问的冷数据，推荐沉淀到 {Describe(docVol)}，剩余 {docVol.FreeFormatted}，为高速卷留出空间。"
                 );
 
             case "creative_media":
@@ -255,14 +276,14 @@ public static class VolumeManager
                 var vidVol = volumes.FirstOrDefault(v => v.Label.Contains("VID", StringComparison.OrdinalIgnoreCase) || v.DriveLetter == "G") ?? hddVolume;
                 return (
                     Path.Combine($"{vidVol.DriveLetter}:\\", "Videos_Vault", "Projects", assetName),
-                    $"【智能存储分层策略】推荐归仓至 {vidVol.DriveLetter} 盘 ({vidVol.MediaType})，利用大容量存储空间承载海量渲染与多媒体素材。"
+                    $"【存储分层建议】渲染素材体量大，推荐归仓到 {Describe(vidVol)}，剩余 {vidVol.FreeFormatted}。"
                 );
 
             default:
                 var genVol = volumes.OrderByDescending(v => v.FreeSizeBytes).First();
                 return (
                     Path.Combine($"{genVol.DriveLetter}:\\", "General_Vault", assetName),
-                    $"推荐存放于当前空闲容量最大的 {genVol.DriveLetter} 盘 (余 {genVol.FreeFormatted})。"
+                    $"推荐存放于当前空闲容量最大的 {genVol.DriveLetter} 盘（剩余 {genVol.FreeFormatted}）。"
                 );
         }
     }
