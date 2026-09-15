@@ -77,6 +77,13 @@ public class Program
         // scripted caller cannot obtain a capability the GUI would refuse.
         // AUDIT W12: the MCP surface shares this same _policy instance, so it cannot expose a
         // capability the GUI or HTTP API would refuse.
+        // AUDIT W06 acceptance affordance: a real, process-level crash injection.
+        if (args.Any(a => a.StartsWith("--fault-inject", StringComparison.OrdinalIgnoreCase)))
+        {
+            Environment.ExitCode = FaultInjection.Run(args, _policy);
+            return;
+        }
+
         if (mcpMode)
         {
             Environment.ExitCode = McpServer.Run(_policy);

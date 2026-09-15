@@ -35,6 +35,14 @@ public sealed class MigrationRequest
 
     /// <summary>Optional post-switch health probe. Return false to trigger rollback.</summary>
     public Func<bool>? HealthCheck { get; init; }
+
+    /// <summary>
+    /// AUDIT W06 acceptance hook. Invoked immediately after a state has been persisted and
+    /// before the corresponding filesystem action runs, which is exactly the window a crash
+    /// would fall into. Production callers leave this null; the acceptance harness uses it to
+    /// terminate the process and then check what a restart can determine from the log.
+    /// </summary>
+    public Action<OperationState>? OnStateRecorded { get; init; }
 }
 
 public sealed class MigrationKernelResult
@@ -232,6 +240,7 @@ public static class MigrationKernel
             record.State = OperationState.Copying;
             record.AddStep("copy", $"开始复制到 staging：{staging}");
             log.Save(record);
+            Report(request, record);
 
             Directory.CreateDirectory(staging);
 
@@ -383,6 +392,7 @@ public static class MigrationKernel
             record.State = OperationState.Verified;
             record.AddStep("verify", "内容与源稳定性和清单全部一致。");
             log.Save(record);
+            Report(request, record);
 
             // ---------------------------------------------------------
             // 4. Publish staging under the confirmed target path
@@ -564,6 +574,7 @@ public static class MigrationKernel
             record.State = OperationState.Switched;
             record.AddStep("switch", "联接已建立并确认，源备份保留。");
             log.Save(record);
+            Report(request, record);
 
             committed = true;
 
@@ -646,6 +657,12 @@ public static class MigrationKernel
 
             OperationLog.ReleaseResources(claimed);
         }
+    }
+
+    /// <summary>Reports a recorded state to the acceptance hook, if one is installed.</summary>
+    private static void Report(MigrationRequest request, OperationRecord record)
+    {
+        request.OnStateRecorded?.Invoke(record.State);
     }
 
     /// <summary>
