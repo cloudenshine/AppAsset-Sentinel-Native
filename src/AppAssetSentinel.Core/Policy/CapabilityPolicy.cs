@@ -45,6 +45,28 @@ public sealed class CapabilityPolicy
             "A07/A24：还原点描述存在脚本注入风险且失败时状态不真实，待 W03/W06 修复。")
     });
 
+    /// <summary>
+    /// R1 profile (AUDIT release gate "Ollama 可信迁移版"). It opens relocation against the
+    /// W07 kernel while keeping every capability that still lacks an acceptance gate closed.
+    /// This is deliberately not the shipped default: R1 acceptance requires an isolated
+    /// account plus two real test volumes, which is tracked separately.
+    /// </summary>
+    public static CapabilityPolicy RelocationVerifiedProfile()
+    {
+        var decisions = SafeObservationDefault().Snapshot()
+            .ToDictionary(kv => kv.Key, kv => kv.Value);
+
+        decisions[Capability.VaultRelocate] = new CapabilityDecision(
+            Capability.VaultRelocate, CapabilityState.Enabled, true,
+            "W07 迁移内核已启用：staging 独占、路径边界、逐文件哈希、冲突保全、写前日志。");
+
+        decisions[Capability.JunctionUnlink] = new CapabilityDecision(
+            Capability.JunctionUnlink, CapabilityState.Enabled, true,
+            "W07：解除联接仅移除锚点链接，源备份与仓库数据均保留。");
+
+        return new CapabilityPolicy(decisions);
+    }
+
     public CapabilityPolicy(Dictionary<Capability, CapabilityDecision> decisions)
     {
         _decisions = decisions;

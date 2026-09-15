@@ -12,6 +12,7 @@ using AppAssetSentinel.Core.Scanner;
 using AppAssetSentinel.Core.Semantic;
 using AppAssetSentinel.Core.Shield;
 using AppAssetSentinel.Core.Migration;
+using AppAssetSentinel.Core.Operations;
 using AppAssetSentinel.Core.Policy;
 using AppAssetSentinel.Core.Safety;
 using AppAssetSentinel.Core.Uninstaller;
@@ -26,8 +27,15 @@ public class Program
     private static readonly Win32RegistryScanner _scanner = new();
     private static readonly TelemetryEngine _telemetry = new();
 
-    /// <summary>Single capability gate. Every write route consults this (AUDIT W01).</summary>
-    private static readonly CapabilityPolicy _policy = CapabilityPolicy.SafeObservationDefault();
+    /// <summary>
+    /// Single capability gate. Every write route consults this (AUDIT W01).
+    /// Default is the safe R0 posture; the R1 relocation profile is opt-in via --profile r1
+    /// because R1 acceptance additionally requires an isolated account and two real test volumes.
+    /// </summary>
+    private static CapabilityPolicy _policy = CapabilityPolicy.SafeObservationDefault();
+
+    /// <summary>Write-ahead operation log; the recovery source of truth (AUDIT W06).</summary>
+    private static readonly OperationLog _operationLog = new(OperationLog.DefaultDirectory);
 
     /// <summary>
     /// Server-authored plans only. The client may reference a plan by id but can never
@@ -50,6 +58,15 @@ public class Program
         _semanticEngine = new SemanticRuleEngine();
         _shield = new DependencyShield();
         RefreshAssets();
+
+        bool r1Profile = args.Any(a => a.Equals("--profile=r1", StringComparison.OrdinalIgnoreCase)
+                                        || a.Equals("--profile", StringComparison.OrdinalIgnoreCase));
+        if (args.Any(a => a.Equals("--profile=r1", StringComparison.OrdinalIgnoreCase)))
+        {
+            _policy = CapabilityPolicy.RelocationVerifiedProfile();
+            Console.WriteLine("[!] R1 迁移档已启用：VaultRelocate 与 JunctionUnlink 开放。");
+        }
+        _ = r1Profile;
 
         if (args.Length > 0 && args[0].Equals("--headless-scan", StringComparison.OrdinalIgnoreCase))
         {
@@ -201,9 +218,54 @@ public class Program
         // -------------------------------------------------------------
         app.MapGet("/api/policy", () => Results.Ok(new
         {
-            profile = "R0-safe-observation",
+            profile = _policy.AllowsMutation(Capability.VaultRelocate) ? "R1-relocation-verified" : "R0-safe-observation",
             capabilities = _policy.Describe()
         }));
+
+        // -------------------------------------------------------------
+        // AUDIT W06: on restart, the log — not any cached status — says what
+        // actually happened and which resources are still mid-operation.
+        // -------------------------------------------------------------
+        app.MapGet("/api/operations", () =>
+        {
+            var records = _operationLog.LoadAll();
+            return Results.Ok(new
+            {
+                log_directory = OperationLog.DefaultDirectory,
+                total = records.Count,
+                unfinished = records.Count(r => r.State is OperationState.Copying
+                    or OperationState.Copied or OperationState.Verified
+                    or OperationState.Switched or OperationState.NeedsAttention),
+                records = records.Select(r => new
+                {
+                    task_id = r.TaskId,
+                    asset_name = r.AssetName,
+                    state = r.State.ToString(),
+                    source_path = r.SourcePath,
+                    target_path = r.TargetPath,
+                    source_backup_path = r.SourceBackupPath,
+                    staging_path = r.StagingPath,
+                    backup_disposition = r.BackupDisposition.ToString(),
+                    conflicts = r.Conflicts.Count,
+                    recovery_note = r.RecoveryNote,
+                    created_at = r.CreatedAt,
+                    updated_at = r.UpdatedAt
+                })
+            });
+        });
+
+        app.MapGet("/api/operations/{taskId}", (string taskId) =>
+        {
+            var loaded = _operationLog.Load(taskId);
+            if (!loaded.Succeeded)
+            {
+                return Results.Ok(new { status = "Failed", code = "log_corrupt", message = loaded.Error });
+            }
+
+            return loaded.FileMissing
+                ? Results.Ok(new { status = "Failed", code = "log_missing", message = "不存在该任务记录。" })
+                : Results.Ok(loaded.Record);
+        });
 
         // -------------------------------------------------------------
         // Read-only observation
@@ -377,9 +439,18 @@ public class Program
 
         app.MapPost("/api/vault/relocate", (RelocateRequest req) =>
         {
-            var outcome = AssetVaultEngine.RelocateAndDualLock(
-                _policy, req.SourcePath, req.TargetVaultPath, req.AssetName, req.Category);
-            return Results.Ok(outcome);
+            // AUDIT W07: the confirmed target path is passed through verbatim; the kernel
+            // enforces boundary, staging exclusivity, per-file verification and conflict
+            // preservation, and every step is written to the log before it happens.
+            var result = MigrationKernel.Execute(_policy, _operationLog, new MigrationRequest
+            {
+                SourcePath = req.SourcePath,
+                TargetPath = req.TargetVaultPath,
+                AssetName = req.AssetName,
+                Category = req.Category
+            });
+
+            return Results.Ok(result.Outcome);
         });
 
         app.MapGet("/api/vault/watchdog", () => Results.Ok(DriftWatchdog.InspectAndAuditDrifts(_policy)));
