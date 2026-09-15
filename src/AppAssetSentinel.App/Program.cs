@@ -38,6 +38,12 @@ public class Program
     /// <summary>Write-ahead operation log; the recovery source of truth (AUDIT W06).</summary>
     private static readonly OperationLog _operationLog = new(OperationLog.DefaultDirectory);
 
+    /// <summary>AUDIT A28: inventory runs in the background; the UI reads this state.</summary>
+    private static readonly ScanStatus _scanStatus = new();
+
+    private static readonly object _scanGate = new();
+    private static bool _scanRunning;
+
     /// <summary>
     /// Server-authored plans only. The client may reference a plan by id but can never
     /// hand back an executable plan document (AUDIT W03).
@@ -59,7 +65,11 @@ public class Program
         _semanticEngine = new SemanticRuleEngine();
         _shield = new DependencyShield();
         ReportPackagingIntegrity();
-        RefreshAssets();
+
+        // AUDIT A28: serve the last known inventory immediately instead of blocking the
+        // window on a full scan, then refresh in the background.
+        LoadCachedInventory();
+        StartBackgroundScan();
 
         bool r1Profile = args.Any(a => a.Equals("--profile=r1", StringComparison.OrdinalIgnoreCase)
                                         || a.Equals("--profile", StringComparison.OrdinalIgnoreCase));
@@ -82,6 +92,14 @@ public class Program
 
         var webThread = new Thread(() => StartWebServer(args)) { IsBackground = true };
         webThread.Start();
+
+        // AUDIT A28: wait for a *real* readiness signal instead of a fixed delay. The probe
+        // asks the server whether it is accepting connections, so a slow machine no longer
+        // opens the window against a port that is not listening yet.
+        bool ready = WaitForServerReady(TimeSpan.FromSeconds(20));
+        Console.WriteLine(ready
+            ? "[OK] 本地服务已就绪。"
+            : "[!] 本地服务在超时内未就绪；界面可能无法加载数据。");
 
         if (args.Length > 0 && args[0].Equals("--server-only", StringComparison.OrdinalIgnoreCase))
         {
@@ -152,30 +170,140 @@ public class Program
             : "[!] 缺少本地前端资源 wwwroot/vendor/tailwind.min.js（界面将无样式）");
     }
 
-    private static void RefreshAssets()
+    /// <summary>
+    /// AUDIT A28/A13: loads the previous inventory so the UI has something honest to show
+    /// while a fresh scan runs. The snapshot is labelled as cached in the scan status.
+    /// </summary>
+    private static void LoadCachedInventory()
     {
-        Console.WriteLine("[*] 正在执行全盘 Win32 注册表、便携资产与多维遥测扫描...");
-        var sw = Stopwatch.StartNew();
-        var scanned = _scanner.ScanInstalledSoftware(includeSystemComponents: false, calculateDiskSize: true);
-        _semanticEngine.EnrichAll(scanned);
-
-        foreach (var a in scanned)
+        var loaded = ScanSnapshotCache.Load();
+        if (!loaded.Succeeded)
         {
-            DynamicAssetIntelligence.EnhanceWithDynamicIntelligence(a);
+            Console.WriteLine($"[!] 缓存清单损坏，将忽略并重新扫描：{loaded.Error}");
+            return;
         }
 
-        _shield.BuildGraph(scanned);
-        _telemetry.AnalyzeAll(scanned);
-        RedundancyAndSxsAnalyzer.Analyze(scanned);
+        if (loaded.FileMissing || loaded.Assets.Count == 0)
+        {
+            Console.WriteLine("[*] 无可用缓存清单，等待首次扫描完成。");
+            _scanStatus.Phase = ScanPhase.NeverScanned;
+            return;
+        }
 
         lock (_cachedAssets)
         {
             _cachedAssets.Clear();
-            _cachedAssets.AddRange(scanned);
+            _cachedAssets.AddRange(loaded.Assets);
         }
 
-        sw.Stop();
-        Console.WriteLine($"[OK] 扫描完成：{_cachedAssets.Count} 项，耗时 {sw.ElapsedMilliseconds} ms。");
+        _scanStatus.ServingCachedSnapshot = true;
+        _scanStatus.AssetCount = loaded.Assets.Count;
+        Console.WriteLine($"[OK] 已载入缓存清单：{loaded.Assets.Count} 项（采集于 {loaded.CapturedAtUtc:yyyy-MM-dd HH:mm:ss} UTC），后台正在刷新。");
+    }
+
+    /// <summary>Starts a scan without blocking the caller. A second call while running is a no-op.</summary>
+    private static bool StartBackgroundScan()
+    {
+        lock (_scanGate)
+        {
+            if (_scanRunning)
+            {
+                return false;
+            }
+
+            _scanRunning = true;
+        }
+
+        _scanStatus.Phase = ScanPhase.Scanning;
+        _scanStatus.StartedAtUtc = DateTime.UtcNow;
+        _scanStatus.LastError = string.Empty;
+
+        var thread = new Thread(() =>
+        {
+            var sw = Stopwatch.StartNew();
+            try
+            {
+                Console.WriteLine("[*] 后台扫描：Win32 注册表、便携资产与多维遥测...");
+
+                var scanned = _scanner.ScanInstalledSoftware(includeSystemComponents: false, calculateDiskSize: true);
+                _semanticEngine.EnrichAll(scanned);
+
+                foreach (var a in scanned)
+                {
+                    DynamicAssetIntelligence.EnhanceWithDynamicIntelligence(a);
+                }
+
+                _shield.BuildGraph(scanned);
+                _telemetry.AnalyzeAll(scanned);
+                RedundancyAndSxsAnalyzer.Analyze(scanned);
+
+                lock (_cachedAssets)
+                {
+                    _cachedAssets.Clear();
+                    _cachedAssets.AddRange(scanned);
+                }
+
+                // Persist so the next start can render immediately.
+                try
+                {
+                    ScanSnapshotCache.Save(scanned);
+                }
+                catch (Exception ex)
+                {
+                    _scanStatus.LastError = $"快照保存失败：{ex.Message}";
+                }
+
+                sw.Stop();
+                _scanStatus.Phase = ScanPhase.Completed;
+                _scanStatus.AssetCount = scanned.Count;
+                _scanStatus.DurationMs = sw.ElapsedMilliseconds;
+                _scanStatus.CompletedAtUtc = DateTime.UtcNow;
+                _scanStatus.ServingCachedSnapshot = false;
+                Console.WriteLine($"[OK] 扫描完成：{scanned.Count} 项，耗时 {sw.ElapsedMilliseconds} ms。");
+            }
+            catch (Exception ex)
+            {
+                sw.Stop();
+                _scanStatus.Phase = ScanPhase.Failed;
+                _scanStatus.DurationMs = sw.ElapsedMilliseconds;
+                _scanStatus.LastError = ex.Message;
+                Console.WriteLine($"[!] 扫描失败：{ex.Message}（继续提供上一次结果）");
+            }
+            finally
+            {
+                lock (_scanGate)
+                {
+                    _scanRunning = false;
+                }
+            }
+        })
+        {
+            IsBackground = true,
+            Name = "AppAssetSentinel.Scan"
+        };
+
+        thread.Start();
+        return true;
+    }
+
+    /// <summary>Blocking scan used by the headless command, where nothing is waiting on a window.</summary>
+    private static void RefreshAssets()
+    {
+        StartBackgroundScan();
+
+        var deadline = DateTime.UtcNow.AddMinutes(5);
+        while (DateTime.UtcNow < deadline)
+        {
+            lock (_scanGate)
+            {
+                if (!_scanRunning)
+                {
+                    return;
+                }
+            }
+
+            Thread.Sleep(100);
+        }
     }
 
     private static void StartWebServer(string[] args)
@@ -259,6 +387,18 @@ public class Program
         // -------------------------------------------------------------
         // Capability posture (read-only, always safe)
         // -------------------------------------------------------------
+        // AUDIT A28: the launcher polls this instead of sleeping a fixed 800 ms.
+        // Reaching it at all means the HTTP server is accepting connections.
+        app.MapGet("/api/ready", () => Results.Ok(new
+        {
+            ready = true,
+            scan_phase = _scanStatus.Phase.ToString(),
+            serving_cached_snapshot = _scanStatus.ServingCachedSnapshot,
+            asset_count = _scanStatus.AssetCount
+        }));
+
+        app.MapGet("/api/scan/status", () => Results.Ok(_scanStatus));
+
         app.MapGet("/api/policy", () => Results.Ok(new
         {
             profile = _policy.AllowsMutation(Capability.VaultRelocate) ? "R1-relocation-verified" : "R0-safe-observation",
@@ -354,6 +494,11 @@ public class Program
 
                 return Results.Ok(new
                 {
+                    // AUDIT A28/W04: say whether this is cached or current, so the UI never
+                    // presents stale data as if it were freshly verified.
+                    scan_phase = _scanStatus.Phase.ToString(),
+                    serving_cached_snapshot = _scanStatus.ServingCachedSnapshot,
+                    scan_error = _scanStatus.LastError,
                     total_apps = _cachedAssets.Count,
                     total_size_bytes = totalBytes,
                     total_size_formatted = $"{Math.Round((double)totalBytes / (1024 * 1024 * 1024), 2)} GB",
@@ -417,8 +562,18 @@ public class Program
 
         app.MapPost("/api/scan", () =>
         {
-            RefreshAssets();
-            return Results.Ok(new { status = "observed", count = _cachedAssets.Count, did_mutate = false });
+            // AUDIT A28: return immediately and let the UI follow /api/scan/status, so a
+            // running scan never freezes the interface.
+            bool started = StartBackgroundScan();
+
+            return Results.Ok(new
+            {
+                status = started ? "scanning" : "already_running",
+                did_mutate = false,
+                scan_phase = _scanStatus.Phase.ToString(),
+                serving_cached_snapshot = _scanStatus.ServingCachedSnapshot,
+                asset_count = _cachedAssets.Count
+            });
         });
 
         // -------------------------------------------------------------
@@ -707,6 +862,37 @@ public class Program
         });
 
         app.Run();
+    }
+
+    /// <summary>
+    /// Polls /api/ready until the embedded server answers. Reaching the endpoint at all is the
+    /// readiness condition, so this measures the real thing rather than assuming a duration.
+    /// </summary>
+    private static bool WaitForServerReady(TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+
+        using var client = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(2) };
+
+        while (DateTime.UtcNow < deadline)
+        {
+            try
+            {
+                var response = client.GetAsync($"{BaseUrl}/api/ready").GetAwaiter().GetResult();
+                if (response.IsSuccessStatusCode)
+                {
+                    return true;
+                }
+            }
+            catch
+            {
+                // Not listening yet; keep waiting until the deadline.
+            }
+
+            Thread.Sleep(100);
+        }
+
+        return false;
     }
 
     private static string GetWebRootPath()

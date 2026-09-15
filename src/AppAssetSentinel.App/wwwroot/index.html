@@ -11,6 +11,12 @@
     .glass-panel { background: rgba(22, 27, 34, 0.9); backdrop-filter: blur(12px); border: 1px solid rgba(48, 54, 61, 0.7); }
     .glass-card { background: #161b22; border: 1px solid #30363d; transition: all 0.2s ease; }
     .glass-card:hover { border-color: #58a6ff; transform: translateY(-2px); }
+
+    /* AUDIT W11: normal readable sizes instead of 10-11px micro text everywhere. */
+    body { font-size: 14px; }
+    .glass-card { font-size: 13px; }
+    .glass-card p, .glass-card span, .glass-card h3, .glass-card h4 { line-height: 1.55; }
+    .detail-text { font-size: 13px; }
     ::-webkit-scrollbar { width: 8px; height: 8px; }
     ::-webkit-scrollbar-track { background: #0d1117; }
     ::-webkit-scrollbar-thumb { background: #30363d; border-radius: 4px; }
@@ -121,6 +127,18 @@
           <div class="p-3 bg-emerald-500/10 text-emerald-400 rounded-xl">
             <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
           </div>
+        </div>
+      </div>
+
+      <!-- AUDIT A28/W11: what state is this data in? -->
+      <div id="scan-state-banner" class="glass-panel px-4 py-2.5 rounded-xl flex flex-wrap items-center justify-between gap-2 text-xs">
+        <div class="flex items-center space-x-2">
+          <span id="scan-state-dot" class="w-2 h-2 rounded-full bg-slate-400"></span>
+          <span id="scan-state-text" class="text-gray-300">正在检查数据状态…</span>
+        </div>
+        <div class="flex items-center space-x-3">
+          <span id="scan-state-detail" class="text-[11px] text-gray-500"></span>
+          <button type="button" id="btn-rescan-inline" onclick="triggerScan()" class="text-blue-400 hover:underline">重新扫描</button>
         </div>
       </div>
 
@@ -575,6 +593,85 @@
      * "C:\Tools\X" silently becomes "C:ToolsX". Handlers are wired by delegation from
      * data attributes, so the raw value survives byte-for-byte.
      */
+    /** AUDIT W11: state the evidence basis rather than asserting a verdict. */
+    function describeEvidence(app) {
+      const isZh = (currentLang === 'zh');
+      if (app.is_running) {
+        return isZh ? '正在运行的进程（最强证据）' : 'A live process (strongest evidence)';
+      }
+
+      const src = app.telemetry_source || '';
+      const conf = app.usage_confidence || 'unknown';
+
+      if (conf === 'unknown' || src === 'no_evidence_observed') {
+        return isZh
+          ? '未观察到任何活动证据；这不等于“没有使用”，因此不给出僵尸判定'
+          : 'No activity evidence observed. This is not the same as "unused", so no verdict is given.';
+      }
+
+      const map = {
+        desktop_shortcut: isZh ? '桌面/开始菜单快捷方式的时间戳（间接证据）' : 'Desktop/Start-menu shortcut timestamps (indirect)',
+        appdata_activity: isZh ? '用户配置目录的写入记录（间接证据）' : 'User configuration writes (indirect)',
+        executable_file_stamp: isZh ? '仅主程序文件时间戳（弱证据，不足以判定闲置）' : 'Executable timestamp only (weak; not enough to call it idle)',
+        install_date_registration: isZh ? '仅注册表安装日期（弱证据）' : 'Registry install date only (weak)',
+        active_service: isZh ? '正在运行的 Windows 服务' : 'A running Windows service'
+      };
+
+      for (const key in map) {
+        if (src.indexOf(key) === 0) return map[key];
+      }
+
+      return src || (isZh ? '未知来源' : 'Unknown source');
+    }
+
+    /** AUDIT W11: say which action is actually available, matching the policy posture. */
+    function describeAvailableAction(app) {
+      const isZh = (currentLang === 'zh');
+      const heat = app.heat_level || 'unknown';
+      const immune = app.is_protected || heat === 'infrastructure';
+
+      if (immune) {
+        return isZh ? '只读：可查看依赖与恢复材料，写入未开放' : 'Read-only: dependencies and recovery material; writes are closed';
+      }
+
+      return isZh ? '只读：可生成计划预览与无害演练，真实写入未开放' : 'Read-only: plan preview and dry run; live writes are closed';
+    }
+
+    /** Renders the scan/readiness state so cached data is never mistaken for verified data. */
+    function renderScanState(overview) {
+      const isZh = (currentLang === 'zh');
+      const phase = overview.scan_phase || 'NeverScanned';
+      const cached = overview.serving_cached_snapshot === true;
+      const dot = document.getElementById('scan-state-dot');
+      const text = document.getElementById('scan-state-text');
+      const detail = document.getElementById('scan-state-detail');
+      if (!dot || !text) return;
+
+      const labels = {
+        NeverScanned: isZh ? '尚未扫描' : 'Not scanned yet',
+        Scanning: isZh ? '检查中…（界面可继续操作）' : 'Checking… (the UI stays responsive)',
+        Completed: isZh ? '已验证：本次扫描结果为最新' : 'Verified: results are current',
+        Failed: isZh ? '需要注意：扫描失败，正在显示上一次结果' : 'Needs attention: scan failed, showing previous results'
+      };
+
+      const colors = {
+        NeverScanned: 'bg-slate-400',
+        Scanning: 'bg-amber-400 animate-pulse',
+        Completed: 'bg-emerald-400',
+        Failed: 'bg-rose-500'
+      };
+
+      dot.className = 'w-2 h-2 rounded-full ' + (colors[phase] || 'bg-slate-400');
+      text.textContent = labels[phase] || phase;
+
+      if (detail) {
+        const parts = [];
+        if (cached) parts.push(isZh ? '当前显示缓存结果' : 'showing cached results');
+        if (overview.scan_error) parts.push(overview.scan_error);
+        detail.textContent = parts.join(' · ');
+      }
+    }
+
     function readDataAttr(el, name) {
       const raw = el.getAttribute(name);
       return raw === null ? '' : raw;
@@ -686,6 +783,7 @@
         const res = await fetch('/api/overview');
         const data = await res.json();
         const t = i18n[currentLang] || i18n.zh;
+        renderScanState(data);
         document.getElementById('stat-total').innerText = data.total_apps || 0;
         document.getElementById('stat-size').innerText = data.total_size_formatted || '0 GB';
         document.getElementById('stat-zombie').innerText = data.zombie_apps_count || 0;
@@ -815,6 +913,18 @@
                 <div class="flex items-start space-x-2 pt-1 border-t border-gray-800/80">
                   <span class="text-amber-400 font-semibold whitespace-nowrap">${t.impact}</span>
                   <span class="text-gray-300 leading-relaxed">${esc(app.dependency_chain || (isZh ? '独立运行，卸载不影响其他软件。' : 'Standalone runtime; uninstalling does not affect other applications.'))}</span>
+                </div>
+              </div>
+
+              <!-- AUDIT W11: what is the evidence, and what can actually be done about it? -->
+              <div class="bg-[#0d1117]/60 rounded-lg p-2 border border-[#30363d]/40 space-y-1 text-[12px]">
+                <div class="flex items-start space-x-2">
+                  <span class="text-gray-500 whitespace-nowrap">【证据】</span>
+                  <span class="text-gray-400 leading-relaxed">${esc(describeEvidence(app))}</span>
+                </div>
+                <div class="flex items-start space-x-2">
+                  <span class="text-gray-500 whitespace-nowrap">【可做】</span>
+                  <span class="text-gray-400 leading-relaxed">${esc(describeAvailableAction(app))}</span>
                 </div>
               </div>
 
@@ -982,7 +1092,13 @@
                 <span class="px-2 py-0.5 rounded text-[10px] ${c.is_c_drive ? 'bg-rose-950 text-rose-300 border border-rose-800' : 'bg-gray-800 text-gray-300'} font-mono font-bold">${esc(c.current_drive)} ${isZh ? '盘' : 'Drive'}</span>
                 ${c.is_junction ? `<span class="px-2 py-0.5 rounded text-[10px] bg-emerald-950 text-emerald-400 border border-emerald-800 font-bold">${isZh ? '⚡ 已建立锁死联接' : '⚡ Linked'}</span>` : ''}
               </div>
-              <p class="text-gray-400 font-mono text-[11px] truncate" title="${escAttr(c.source_path)}">${esc(c.source_path)}</p>
+              <div class="flex items-center space-x-1.5">
+                <p class="text-gray-400 font-mono text-[12px] truncate" title="${escAttr(c.source_path)}">${esc(c.source_path)}</p>
+                <button type="button" class="js-copy shrink-0 text-gray-500 hover:text-blue-400"
+                        data-copy="${escAttr(c.source_path)}" title="${isZh ? '复制路径' : 'Copy path'}">
+                  <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
+                </button>
+              </div>
               <p class="text-[11px] text-gray-300 leading-relaxed">${esc(c.description)}</p>
               ${c.is_junction ? `
                 <p class="text-[11px] text-purple-300 font-mono">${isZh ? '物理仓库端点' : 'Vault Endpoint'}: ${esc(c.junction_target)}</p>
@@ -1022,6 +1138,15 @@
           readDataAttr(relocateBtn, 'data-name'),
           readDataAttr(relocateBtn, 'data-domain'),
           readDataAttr(relocateBtn, 'data-reason'));
+        return;
+      }
+
+      const copyBtn = event.target.closest('.js-copy');
+      if (copyBtn) {
+        const value = readDataAttr(copyBtn, 'data-copy');
+        navigator.clipboard.writeText(value)
+          .then(() => { copyBtn.classList.add('text-emerald-400'); setTimeout(() => copyBtn.classList.remove('text-emerald-400'), 900); })
+          .catch(() => alert(value));
         return;
       }
 
@@ -1456,12 +1581,11 @@
       btn.disabled = true;
 
       try {
-        await apiPost('/api/scan', {});
-        await loadOverview();
-        await fetchApps();
-        if (currentView === 'migration') await loadVaultDashboard();
-        if (currentView === 'dependencies') await loadDependencies();
-        if (currentView === 'safety') loadSafetyStatus();
+        // AUDIT A28: start the scan and follow it, rather than blocking the UI on it.
+        const res = await apiPost('/api/scan', {});
+        const started = await res.json();
+        renderScanState({ scan_phase: started.scan_phase, serving_cached_snapshot: started.serving_cached_snapshot });
+        scheduleScanPolling();
       } catch(e) {
         alert('Scan failed: ' + e.message);
       } finally {
@@ -1495,7 +1619,47 @@
       await loadOverview();
       await fetchApps();
       await loadPolicyPosture();
+      scheduleScanPolling();
     });
+
+    /**
+     * AUDIT A28: instead of freezing on a blocking scan, poll the status while it runs and
+     * refresh the lists once it finishes or fails.
+     */
+    let scanPollTimer = null;
+
+    function scheduleScanPolling() {
+      if (scanPollTimer) clearInterval(scanPollTimer);
+
+      scanPollTimer = setInterval(async () => {
+        try {
+          const res = await fetch('/api/scan/status');
+          const st = await res.json();
+
+          if (st.phase === 'Scanning') {
+            renderScanState({
+              scan_phase: 'Scanning',
+              serving_cached_snapshot: st.serving_cached_snapshot
+            });
+            return;
+          }
+
+          clearInterval(scanPollTimer);
+          scanPollTimer = null;
+
+          if (st.phase === 'Completed' || st.phase === 'Failed') {
+            await loadOverview();
+            await fetchApps();
+            if (currentView === 'migration') await loadVaultDashboard();
+            if (currentView === 'dependencies') await loadDependencies();
+            if (currentView === 'safety') loadSafetyStatus();
+          }
+        } catch (e) {
+          clearInterval(scanPollTimer);
+          scanPollTimer = null;
+        }
+      }, 1200);
+    }
 
     // AUDIT W01: show the user exactly which writes are open right now.
     async function loadPolicyPosture() {
