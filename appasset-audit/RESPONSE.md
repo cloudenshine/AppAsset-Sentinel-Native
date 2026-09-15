@@ -216,11 +216,53 @@ relocation_enabled=False   # 默认仍是 R0
 - **配置偏离**作为独立、具名的原因（`DescribeConfigDeviation`），覆盖 A19。
 - **诊断不杜撰原因**：报告与建议中不出现"软件升级导致"这类未经证明的归因。
 
-### W10–W12 —— ⏳ 未实施
+### W10 / P1 第二适配器与只读扩展 —— ✅ 完成
 
-- **W10** HF/Docker 只读适配器：未实现。
-- **W11** UI 异步化（先显示缓存、真实 readiness）：未实现。
-- **W12** 完整自包含 ZIP 与空目录离线启动验收：未实现。
+新增 `Core/Adapters/HuggingFaceAdapter.cs` 与 `AdapterRegistry.cs`。
+
+**修正 A20 的层级错误**：`HF_HUB_CACHE` 指向 hub 目录本身，`HF_HOME` 指向其父级。
+原实现扫描 `…huggingface\hub` 却写入 `HF_HOME`，会把缓存变成 `hub/hub` 并孤立真实缓存。
+`ValidateRelocationTarget` 现在会拒绝这种层级不匹配。
+
+- 两种快照布局都被识别（符号链接 vs 实体副本）；混用时如实报告，不做假设。
+- 共享 blob 只从 `blobs/` 计一次。
+  **修复此点暴露了我自己第一版的缺陷**：用 `AllDirectories` 枚举快照会跟随重解析点
+  回到 `blobs/`，把同一个 payload 再算一次。清单现在按不跟随链接的方式遍历。
+- `AdapterRegistry` 逐领域声明写能力：只有通过验收的 `ai_models` 可进入目录迁移；
+  `docker_disk` / `social_docs` / `creative_media` 一律 `Unsupported` 并附原因。
+- **A21**：单文件候选在进入目录内核之前就被拒绝，判定依据是**文件系统的真实类型**，
+  而不是只信声明。
+
+### W12 / P1 可复现发布与离线启动验收 —— 🟡 主要项完成
+
+新增 `scripts/New-Release.ps1`，产出完整 ZIP：可执行文件、`wwwroot`（含本地前端资源）、
+`rules`、README、LICENSE，以及带**逐文件哈希 + 提交 + SDK 版本 + 工作树是否干净**的
+`MANIFEST.json`。若 `index.html` 仍引用远程 CDN 或缺少本地资源，脚本直接失败。
+
+**修复了一个真实的 A26 打包缺陷**（由新脚本发现）：`rules/` 只用
+`CopyToOutputDirectory` 声明，能进 `bin/` 却**在 `dotnet publish` 时被静默丢弃**。
+源码树里运行正常、独立安装却找不到自己的规则——正是审计警告的"掩蔽"。
+现改为 `Content` + `CopyToPublishDirectory`。
+
+新增启动自检，缺失资源会被明确报出。
+
+**实机验收**：把 ZIP 解压到含**中文与空格**、**与源码无关**且**不含 `src/`** 的目录，
+以普通账户离线启动：
+
+```
+[OK] 界面资源: …\验收 测试 目录\Sentinel R0 空目录\wwwroot
+[OK] 规则库: …（59 条画像规则）
+[OK] 本地前端资源: wwwroot/vendor
+index.html → 200      vendor/tailwind.min.js → 200
+policy profile → R0-safe-observation
+删除 rules/ 后 → [!] 分发包不完整：…未找到 rules/app_semantics.json
+```
+
+未完成：.NET 10 LTS 迁移（需先验证 Photino 打包兼容）、WebView2 GUI 实机检查、CLI/MCP 接口面。
+
+### W11 —— ⏳ 未实施
+
+UI 异步化（先显示缓存、真实 readiness、任务可观察/取消）未实现。
 
 ### R1 档位的开放条件
 
@@ -235,7 +277,7 @@ relocation_enabled=False   # 默认仍是 R0
 
 ```
 dotnet test src/AppAssetSentinel.Tests/AppAssetSentinel.Tests.csproj
-已通过! - 失败: 0，通过: 102，已跳过: 0，总计: 102
+已通过! - 失败: 0，通过: 117，已跳过: 0，总计: 117
 ```
 
 新增/重写的用例覆盖：能力门控、登记原子性与损坏、路径边界（同路径/互相包含/别名/大小写/尾分隔符）、
