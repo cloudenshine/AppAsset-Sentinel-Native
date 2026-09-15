@@ -158,6 +158,21 @@
             </select>
           </div>
         </div>
+        <!-- Category Filter Row -->
+        <div class="flex flex-wrap items-center gap-2 pt-2 border-t border-[#30363d]/50 text-xs">
+          <span id="txt-cat-lbl" class="text-gray-400 mr-2 flex items-center shrink-0">
+            <svg class="w-3.5 h-3.5 mr-1 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h7"/></svg>
+            软件分类:
+          </span>
+          <button onclick="setFilterCategory('all')" class="filter-cat-btn px-3 py-1 rounded-full bg-blue-600 text-white font-medium transition" data-cat="all" id="btn-cat-all">全部</button>
+          <button onclick="setFilterCategory('ai_compute')" class="filter-cat-btn px-3 py-1 rounded-full bg-[#161b22] hover:bg-gray-800 text-gray-300 transition" data-cat="ai_compute" id="btn-cat-ai">🧠 AI与算力</button>
+          <button onclick="setFilterCategory('dev_environment')" class="filter-cat-btn px-3 py-1 rounded-full bg-[#161b22] hover:bg-gray-800 text-gray-300 transition" data-cat="dev_environment" id="btn-cat-dev">🛠️ 开发与环境</button>
+          <button onclick="setFilterCategory('media_production')" class="filter-cat-btn px-3 py-1 rounded-full bg-[#161b22] hover:bg-gray-800 text-gray-300 transition" data-cat="media_production" id="btn-cat-media">🎬 媒体与设计</button>
+          <button onclick="setFilterCategory('office_collaboration')" class="filter-cat-btn px-3 py-1 rounded-full bg-[#161b22] hover:bg-gray-800 text-gray-300 transition" data-cat="office_collaboration" id="btn-cat-office">💼 办公与协同</button>
+          <button onclick="setFilterCategory('system_runtime')" class="filter-cat-btn px-3 py-1 rounded-full bg-[#161b22] hover:bg-gray-800 text-gray-300 transition" data-cat="system_runtime" id="btn-cat-runtime">⚙️ 底层与运行库</button>
+          <button onclick="setFilterCategory('tools_utility')" class="filter-cat-btn px-3 py-1 rounded-full bg-[#161b22] hover:bg-gray-800 text-gray-300 transition" data-cat="tools_utility" id="btn-cat-tools">🔧 常用工具</button>
+        </div>
+
         <div class="flex flex-wrap items-center gap-2 pt-2 border-t border-[#30363d]/50 text-xs">
           <span id="txt-heat-lbl" class="text-gray-400 mr-2">热度画像:</span>
           <button onclick="setFilterHeat('all')" class="filter-heat-btn px-3 py-1 rounded-full bg-blue-600 text-white font-medium transition" data-heat="all">全部</button>
@@ -434,6 +449,14 @@
         sortHeat: "🔥 使用热度 (高到低)",
         sortSize: "💾 磁盘占用 (大到小)",
         sortName: "🔤 软件名称",
+        catProfile: "软件分类:",
+        catAll: "全部",
+        catAi: "🧠 AI与算力",
+        catDev: "🛠️ 开发与环境",
+        catMedia: "🎬 媒体与设计",
+        catOffice: "💼 办公与协同",
+        catRuntime: "⚙️ 底层与运行库",
+        catTools: "🔧 常用工具",
         heatProfile: "热度画像:",
         heatAll: "全部",
         heatHot: "🔥 极度活跃",
@@ -496,6 +519,14 @@
         sortHeat: "🔥 Activity Heat (High to Low)",
         sortSize: "💾 Disk Footprint (Large to Small)",
         sortName: "🔤 Software Name",
+        catProfile: "Category:",
+        catAll: "All",
+        catAi: "🧠 AI & Compute",
+        catDev: "🛠️ Dev & Env",
+        catMedia: "🎬 Media & Design",
+        catOffice: "💼 Office & Collab",
+        catRuntime: "⚙️ Runtime & System",
+        catTools: "🔧 Utilities",
         heatProfile: "Activity Profile:",
         heatAll: "All",
         heatHot: "🔥 Highly Active",
@@ -729,6 +760,14 @@
       document.getElementById('opt-sort-heat').innerText = t.sortHeat;
       document.getElementById('opt-sort-size').innerText = t.sortSize;
       document.getElementById('opt-sort-name').innerText = t.sortName;
+      document.getElementById('txt-cat-lbl').innerHTML = `<svg class="w-3.5 h-3.5 mr-1 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h7"/></svg>${t.catProfile}`;
+      document.getElementById('btn-cat-all').innerText = t.catAll;
+      document.getElementById('btn-cat-ai').innerText = t.catAi;
+      document.getElementById('btn-cat-dev').innerText = t.catDev;
+      document.getElementById('btn-cat-media').innerText = t.catMedia;
+      document.getElementById('btn-cat-office').innerText = t.catOffice;
+      document.getElementById('btn-cat-runtime').innerText = t.catRuntime;
+      document.getElementById('btn-cat-tools').innerText = t.catTools;
       document.getElementById('txt-heat-lbl').innerText = t.heatProfile;
 
       // Vault Tab
@@ -1598,6 +1637,18 @@
     function debounceFetch() {
       clearTimeout(timer);
       timer = setTimeout(fetchApps, 300);
+    }
+
+    function setFilterCategory(c) {
+      activeCategory = c;
+      document.querySelectorAll('.filter-cat-btn').forEach(btn => {
+        if (btn.getAttribute('data-cat') === c) {
+          btn.className = 'filter-cat-btn px-3 py-1 rounded-full bg-blue-600 text-white font-medium transition';
+        } else {
+          btn.className = 'filter-cat-btn px-3 py-1 rounded-full bg-[#161b22] hover:bg-gray-800 text-gray-300 transition';
+        }
+      });
+      fetchApps();
     }
 
     function setFilterHeat(h) {

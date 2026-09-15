@@ -620,7 +620,25 @@ public class Program
 
                 if (!string.IsNullOrWhiteSpace(category) && category != "all")
                 {
-                    query = query.Where(a => a.Category.Equals(category, StringComparison.OrdinalIgnoreCase));
+                    if (category.Equals("media_production", StringComparison.OrdinalIgnoreCase))
+                    {
+                        query = query.Where(a => a.Category.Equals("media_production", StringComparison.OrdinalIgnoreCase) ||
+                                                 a.Category.Equals("design_graphics", StringComparison.OrdinalIgnoreCase));
+                    }
+                    else if (category.Equals("dev_environment", StringComparison.OrdinalIgnoreCase))
+                    {
+                        query = query.Where(a => a.Category.Equals("dev_environment", StringComparison.OrdinalIgnoreCase) ||
+                                                 a.Category.Equals("dev_tools", StringComparison.OrdinalIgnoreCase));
+                    }
+                    else if (category.Equals("ai_compute", StringComparison.OrdinalIgnoreCase))
+                    {
+                        query = query.Where(a => a.Category.Equals("ai_compute", StringComparison.OrdinalIgnoreCase) ||
+                                                 a.Category.Equals("ai_workstation", StringComparison.OrdinalIgnoreCase));
+                    }
+                    else
+                    {
+                        query = query.Where(a => a.Category.Equals(category, StringComparison.OrdinalIgnoreCase));
+                    }
                 }
 
                 if (!string.IsNullOrWhiteSpace(heat_level) && heat_level != "all")
