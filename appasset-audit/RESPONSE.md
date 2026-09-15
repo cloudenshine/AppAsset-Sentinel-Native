@@ -13,7 +13,7 @@
 | **R0 安全观察版** | ✅ 已完成 | W01、W02、W03 全部达成验收；W04 关键项达成（A13/A14/A16/A17/A22）。 |
 | **R1 可信迁移** | ✅ 机制已在真实应用上验收 | W06/W07/W08 完成（含受授权的 Commit 与 Recover）；跨物理盘迁移已在真实两个卷上验收；**真实 Ollama 实例已在重定向位置读取并列出全部 4 个真实模型**（见下节）。R1 档位仍需显式 `--profile=r1`。 |
 | **R2 资产关系** | ✅ 计划层完成 | W09 冲突保全漂移修复、W10 HF/只读适配器均已完成。 |
-| **R3 发布与 Agent 接入** | 🟡 发布完成，接入未做 | W12 可复现 ZIP 与空目录离线启动验收已完成；**W11 UI 异步化已完成**。CLI/MCP 接口面未实现。 |
+| **R3 发布与 Agent 接入** | ✅ 完成 | W11 取消、W12 可复现 ZIP、四入口统一门控（含 MCP）均已完成；已发布 v1.0.0-r0。旧注：**W11 UI 异步化已完成**。CLI/MCP 接口面未实现。 |
 | R2 资产关系版 | ⏳ 未开始 | W09 漂移诊断已可用（只诊断），W10 第二适配器未开始。 |
 | R3 发布与 Agent 接入版 | ⏳ 未开始 | 尚未提供完整自包含 ZIP 与空目录离线启动验收。 |
 
@@ -309,7 +309,7 @@ R1  --policy : 上述四项 Enabled；UninstallLive 与 ForceClean 仍 Unsupport
 
 ### 尚未完成
 
-- **MCP 接入面**：未实现（CLI 与 API 已共用同一政策）。
+（本节原列「MCP 未实现」，该缺口已在后续轮次关闭，见下方「八、后续轮次补充」。）
 - **真实"停→迁→重启→推理"**与**跨卷迁移**：需隔离账户 + 两个测试卷。
 - **.NET 10 LTS 迁移**：未做，需先验证 Photino 打包兼容（.NET 9 官方支持至 2026-11-10）。
 - **WebView2 GUI 实机检查**：未做（已验收的是 HTTP 服务与静态资源，不是渲染结果）。
@@ -327,7 +327,7 @@ R1  --policy : 上述四项 Enabled；UninstallLive 与 ForceClean 仍 Unsupport
 
 ```
 dotnet test src/AppAssetSentinel.Tests/AppAssetSentinel.Tests.csproj
-已通过! - 失败: 0，通过: 143，已跳过: 0，总计: 143
+已通过! - 失败: 0，通过: 162，已跳过: 0，总计: 162
 ```
 
 新增/重写的用例覆盖：能力门控、登记原子性与损坏、路径边界（同路径/互相包含/别名/大小写/尾分隔符）、
@@ -406,3 +406,126 @@ README 中「双向锁死防漂移、一键平移、自动愈合、彻底卸载�
 2. `RestorePointCreate` 在提权环境下的真实创建验收。
 3. `.NET 10 LTS` 迁移（需先验证 Photino 打包兼容）。
 4. WebView2 渲染实机检查、MCP 接入面、二进制签名与依赖漏洞扫描。
+
+
+---
+
+## 八、后续轮次补充（第 6–12 轮）
+
+上文第 1–5 轮写就后，又完成了以下工作。**本节是当前状态的权威记录。**
+
+### W06 进程级故障注入验收 —— ✅ 完成
+
+W06 要求「每个关键步骤前后强制终止并重启，可由日志确定实际状态」。此前只实现了判定逻辑
+（`RecoveryInspector`），未做字面的强制终止。现已补上。
+
+`FaultInjection.cs` 在选定状态**落盘之后、对应文件系统动作执行之前**调用
+`Environment.FailFast`——那正是崩溃会落进去的窗口。安全护栏：拒绝任何命中用户数据片段的路径
+（`AIStack`/`.ollama`/`Users`/`AppData`/`Program Files`/`Windows`/`.cache`/`huggingface`），
+并要求源路径含 `sentinel_fixture` 标记，无法被误指向生产数据。
+
+`scripts/Test-CrashRecovery.ps1` 的结果：
+
+```
+CrashAt   LoggedState  Observed            DataAccountedFor  Consistent
+Copying   Copying      OriginalIntact      True              True
+Verified  Verified     OriginalIntact      True              True
+Switched  Switched     SwitchedWithBackup  True              True
+
+所有崩溃点重启后都能确认数据位置：True
+```
+
+三次注入都产生真实终止（退出码 `0xC0000409`）。重启后**仅凭日志**即可判定真实状态，
+磁盘与日志在每一点一致，三处数据都有归属。
+
+### W11 任务取消 —— ✅ 完成
+
+新增 `ScanCancellation` 与 `ScanPhase.Cancelled`。令牌在**顶层阶段之间**与**逐资产体积循环内**
+两处被遵守（后者是几乎全部耗时所在）。
+
+真机验证：
+
+```
+取消前:   phase=Scanning
+取消请求: {"status":"cancelling","cooperative":true}  HTTP=200
+取消后:   phase=Cancelled  duration=938ms  serving_cache=True   （完整扫描约 3550ms）
+重复取消: {"status":"not_running"}
+```
+
+`serving_cache=True` 是关键：取消后继续提供**上一次完整**结果，不把残缺数据当权威。
+响应中明说取消是**协作式**的，未扫描部分为空而非「没有内容」。
+
+### W12 MCP 接入面 —— ✅ 完成
+
+`McpServer.cs`，newline-delimited JSON-RPC 2.0 over stdio。与 GUI / HTTP API / CLI
+**共用同一个 `CapabilityPolicy` 实例**——这个进程拒绝的能力，问 MCP 也拿不到。
+
+真机 JSON-RPC 实测：
+
+```
+initialize  → protocol 2024-11-05, server appasset-sentinel 1.0.0-r0
+tools/list  → 5 个只读工具
+sentinel_policy (R0)           → R0-safe-observation
+sentinel_policy (--profile=r1) → R1-relocation-verified（与其他三个入口同源）
+sentinel_vault_relocate        → isError=true，以策略原因拒绝，且从未出现在 tools/list 中
+```
+
+设计上**不广告写工具**：不是「调用后被拒」，而是压根不在列表里。
+
+### W08 已迁移存储可用性验收 —— ✅ 完成（「可列出」部分）
+
+`scripts/Test-MigratedStoreUsable.ps1` 测完整链路：
+
+```
+[1] 内核跨物理盘迁移（Disk1 → Disk0）
+    status=Succeeded code=switched did_mutate=True
+    确认目标存在: True   清单已随迁: 4
+
+[2] 真实 Ollama 读取内核的「确认目标」
+    迁移后可列出的模型: 4
+      - hf.co/huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF:UD-Q3_K_XL
+      - hf.co/huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF:UD-Q2_K_XL
+      - qwen3.5-defiant:q8_0
+      - huihui_ai/gemma-4-abliterated:12b-qat
+
+[3] 源侧断言
+    锚点已是重解析点: True
+    操作记录: state=Switched / disposition=Retained   源备份保留: True
+
+用户级 OLLAMA_MODELS 未变 · 残留 0 · 真实库完好（4 manifests / 13 blobs）
+```
+
+用的是**真实的 4 个模型清单**、真实的跨物理盘内核迁移、真实的 Ollama 实例。
+这满足了 W08 的「已存在模型迁移后可列出」。
+
+**仍未证明、不声称**：**推理**。那需要多 GB 权重，本验收刻意只搬约 25 KB 的清单与元数据。
+
+### 本轮发现的三个自制缺陷（均靠运行产物而非阅读源码发现）
+
+1. **测试污染生产数据（第 1 轮）**：旧测试套件覆写了用户 `OLLAMA_MODELS` 到已删除的临时路径，
+   并把 10 条夹具写进生产登记文件——**Ollama 实际处于断链状态**。已修复并复验。
+2. **写入静默失败（第 6 轮）**：两个文件被报告「创建成功」但磁盘上什么都没有；随后的构建
+   「成功」是因为没有新代码可编译。若未核对测试数（143 → 152），就会声称代码存在而它并不存在。
+3. **`--profile` 被当作命令（第 12 轮）**：`IsGlobalFlag` 匹配任何以 `--profile` 开头的参数，
+   导致 `--profile=r1 --server-only` 打印帮助后退出——**R1 服务器模式自第 5 轮起一直不可用**。
+   之所以长期未暴露，是因为后续验收要么用 R0 默认档，要么用 `--fault-inject`（其分支在
+   `IsCommand` 检查之前）。
+
+三者共同点：**只有把真实产物跑起来才会暴露**。本报告中的所有结论均以运行结果为准。
+
+### 发布物
+
+- **v1.0.0-r0**（预发布）：https://github.com/cloudenshine/AppAsset-Sentinel-Native/releases/tag/v1.0.0-r0
+- ZIP SHA256 `a3e1a0d1…`（该次构建的工作树干净，`MANIFEST.json` 中 `working_tree_dirty=false`）
+- 包内含 `RELEASE_v1.0.0-r0.md`，按「已验证 / 未运行 / 不支持」三类分列
+
+### 仍未运行（不计为通过）
+
+| 项目 | 原因 |
+|---|---|
+| 真实 42 GB 存储的完整迁移**并推理** | 机制、跨卷、可列出三层均已用真实数据验证；搬动生产数据需用户在场的维护窗口 |
+| 隔离 Windows 账户验收 | 未创建隔离账户 |
+| 系统还原点的提权真实创建 | 需交互式 UAC |
+| WebView2 GUI 渲染实机检查 | 已验收的是 HTTP 服务与静态资源，不是渲染结果 |
+| 二进制签名与依赖漏洞扫描 | 需签名证书与外部漏洞库 |
+| .NET 10 LTS 迁移 | 需先验证 Photino 打包兼容 |
