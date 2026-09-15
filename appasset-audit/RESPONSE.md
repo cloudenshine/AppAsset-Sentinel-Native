@@ -529,3 +529,26 @@ sentinel_vault_relocate        → isError=true，以策略原因拒绝，且从
 | WebView2 GUI 渲染实机检查 | 已验收的是 HTTP 服务与静态资源，不是渲染结果 |
 | 二进制签名与依赖漏洞扫描 | 需签名证书与外部漏洞库 |
 | .NET 10 LTS 迁移 | 需先验证 Photino 打包兼容 |
+### 第 14 轮：恢复判定的一处真实建模错误 —— 已修复
+
+`NeedsAttention` 被映射到**单一**预期磁盘布局（`SwitchedWithBackup`），但它由**三条路径**产生，
+布局各不相同：
+
+| 路径 | 磁盘实际布局 |
+|---|---|
+| 目标冲突 / 目标被占用 | 源仍是普通目录，两侧都存在 |
+| 切换未能确认 | 锚点是链接且备份存在 |
+
+因此冲突路径下，判定会报告「日志与磁盘不一致」——而实际上两者是一致的——并且会**基于错误的
+布局**给出后续建议。这是通过追问「分类器对一条我没跑过的路径会怎样」发现的。
+
+修复：`ExpectedLayout` 对多路径可达的状态返回 `null`；新增 `LogDecides` 标志说明日志是否有决定权；
+无决定权时结论明确**以磁盘为准**。`NeedsAttention` 现在只报告实测布局，不再声称日志决定了它。
+
+```
+冲突场景 → ObservedLayout=BothPresent, LogDecides=false, DataAccountedFor=true,
+           建议为「两侧都保留，请人工比对，系统不会自动合并或删除」
+确定状态 → LogDecides=true, LogMatchesDisk=true（行为不变）
+```
+
+测试数 162 → **164**。
