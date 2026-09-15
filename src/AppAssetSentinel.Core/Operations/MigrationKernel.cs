@@ -37,6 +37,18 @@ public sealed class MigrationRequest
     public Func<bool>? HealthCheck { get; init; }
 
     /// <summary>
+    /// Callback or hook to synchronize the application's internal settings store
+    /// (e.g. config file, SQLite settings DB, or registry) simultaneously with relocation.
+    /// Returns (Success, PreviousValue, Error).
+    /// </summary>
+    public Func<string, (bool Success, string? PreviousValue, string Error)>? AppSettingsUpdater { get; init; }
+
+    /// <summary>
+    /// Rollback hook if the switch fails after updating app settings.
+    /// </summary>
+    public Action<string?>? AppSettingsRestorer { get; init; }
+
+    /// <summary>
     /// AUDIT W06 acceptance hook. Invoked immediately after a state has been persisted and
     /// before the corresponding filesystem action runs, which is exactly the window a crash
     /// would fall into. Production callers leave this null; the acceptance harness uses it to
@@ -449,11 +461,57 @@ public static class MigrationKernel
 
                 var previous = envStore.Set(request.ConfigVariable, boundary.NormalizedTarget, EnvironmentScope.User);
 
+                // Synchronously update application internal settings (e.g. SQLite db.sqlite, config file)
+                string? prevAppSetting = null;
+                if (request.AppSettingsUpdater != null)
+                {
+                    var appResult = request.AppSettingsUpdater(boundary.NormalizedTarget);
+                    if (!appResult.Success)
+                    {
+                        // Rollback env and directory
+                        envStore.Restore(request.ConfigVariable, previous, EnvironmentScope.User);
+                        try
+                        {
+                            if (Directory.Exists(backup) && !Directory.Exists(boundary.NormalizedSource))
+                            {
+                                Directory.Move(backup, boundary.NormalizedSource);
+                            }
+                        }
+                        catch { }
+
+                        record.State = OperationState.SwitchFailed;
+                        record.AddStep("switch", $"更新APP内部设置失败，已自动回滚：{appResult.Error}");
+                        log.Save(record);
+
+                        return new MigrationKernelResult
+                        {
+                            Outcome = new OperationOutcome
+                            {
+                                Status = OperationStatus.FailedRecoverable,
+                                Capability = Capability.VaultRelocate,
+                                DidMutate = false,
+                                Code = "app_settings_update_failed",
+                                Message = $"更新APP内部设置失败，已自动回滚环境配置与原目录：{appResult.Error}",
+                                Recovery = "原数据仍在原位置；请确认应用已彻底关闭后重试。"
+                            },
+                            Record = record
+                        };
+                    }
+
+                    prevAppSetting = appResult.PreviousValue;
+                    record.AppSettingTarget = "app_internal_settings";
+                    record.AppSettingPreviousValue = prevAppSetting;
+                    record.AppSettingAppliedValue = boundary.NormalizedTarget;
+                    record.AddStep("switch", $"已同步更新APP内部设置（原值：{prevAppSetting ?? "空"}，新值：{boundary.NormalizedTarget}）");
+                    log.Save(record);
+                }
+
                 // A health probe is the only proof the consumer actually reads the new location.
                 bool healthy = request.HealthCheck == null || request.HealthCheck();
 
                 if (!healthy)
                 {
+                    request.AppSettingsRestorer?.Invoke(prevAppSetting);
                     envStore.Restore(request.ConfigVariable, previous, EnvironmentScope.User);
                     try
                     {
@@ -489,6 +547,18 @@ public static class MigrationKernel
 
                 committed = true;
 
+                var evidenceList = new List<string>
+                {
+                    $"配置项: {request.ConfigVariable}={boundary.NormalizedTarget}",
+                    $"原目录备份: {backup}（保留中）",
+                    $"文件数: {sourceManifest.Files.Count}，字节: {sourceManifest.TotalBytes}"
+                };
+
+                if (!string.IsNullOrEmpty(record.AppSettingAppliedValue))
+                {
+                    evidenceList.Add($"APP设置同步更新: {record.AppSettingAppliedValue} (原值: {record.AppSettingPreviousValue ?? "空"})");
+                }
+
                 return new MigrationKernelResult
                 {
                     Outcome = new OperationOutcome
@@ -497,13 +567,8 @@ public static class MigrationKernel
                         Capability = Capability.VaultRelocate,
                         DidMutate = true,
                         Code = "switched_via_config",
-                        Message = $"已通过官方配置切换位置（{request.ConfigVariable}）。原目录保留为备份，空间尚未回收。",
-                        Evidence = new List<string>
-                        {
-                            $"配置项: {request.ConfigVariable}={boundary.NormalizedTarget}",
-                            $"原目录备份: {backup}（保留中）",
-                            $"文件数: {sourceManifest.Files.Count}，字节: {sourceManifest.TotalBytes}"
-                        },
+                        Message = $"已通过官方配置与APP设置切换位置（{request.ConfigVariable}）。原目录保留为备份，空间尚未回收。",
+                        Evidence = evidenceList,
                         Recovery = "空间回收是独立的受授权步骤，不会随切换自动发生。"
                     },
                     Record = record

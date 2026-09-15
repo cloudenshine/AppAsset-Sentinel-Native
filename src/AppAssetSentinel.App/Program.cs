@@ -736,14 +736,36 @@ public class Program
             // AUDIT W07/W08: the confirmed target path is passed through verbatim; the kernel
             // enforces boundary, staging exclusivity, per-file verification and conflict
             // preservation, and every step is written to the log before it happens.
+            bool isOllama = req.AssetName.Equals("ollama", StringComparison.OrdinalIgnoreCase) ||
+                            req.SourcePath.Contains("ollama", StringComparison.OrdinalIgnoreCase);
+
             bool officialConfig = string.Equals(
                 req.Mechanism, "official_config", StringComparison.OrdinalIgnoreCase);
+
+            // If relocating Ollama and mechanism wasn't explicitly forced to junction, default to official config + APP settings
+            if (isOllama && !string.Equals(req.Mechanism, "junction", StringComparison.OrdinalIgnoreCase))
+            {
+                officialConfig = true;
+                if (string.IsNullOrWhiteSpace(req.ConfigVariable))
+                {
+                    req.ConfigVariable = OllamaAdapter.ConfigurationVariable;
+                }
+            }
 
             if (officialConfig && string.IsNullOrWhiteSpace(req.ConfigVariable))
             {
                 return Results.Ok(OperationOutcome.Failed(Capability.VaultRelocate,
                     "missing_config_variable",
                     "选择了官方配置机制但未提供 config_variable；未做任何修改。"));
+            }
+
+            Func<string, (bool Success, string? PreviousValue, string Error)>? appSettingsUpdater = null;
+            Action<string?>? appSettingsRestorer = null;
+
+            if (isOllama)
+            {
+                appSettingsUpdater = target => OllamaAdapter.UpdateAppSetting(target);
+                appSettingsRestorer = prev => OllamaAdapter.RestoreAppSetting(prev);
             }
 
             var result = MigrationKernel.Execute(_policy, _operationLog, new MigrationRequest
@@ -757,6 +779,8 @@ public class Program
                     : RelocationMechanism.JunctionCompat,
                 ConfigVariable = officialConfig ? req.ConfigVariable : string.Empty,
                 EnvironmentStore = officialConfig ? SystemEnvironmentStore.Instance : null,
+                AppSettingsUpdater = appSettingsUpdater,
+                AppSettingsRestorer = appSettingsRestorer,
 
                 // AUDIT W08: the health check is deliberately STRUCTURAL. The consumer is stopped
                 // during the switch, so probing the service here would either hit the stale

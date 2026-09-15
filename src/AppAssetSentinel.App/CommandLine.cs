@@ -217,6 +217,10 @@ public static class CommandLine
         var (mechanism, reason) = OllamaAdapter.ChooseMechanism(ollama);
         Console.WriteLine($"发现={ollama.Found} 置信度={ollama.Confidence} 版本={ollama.Version}");
         Console.WriteLine($"模型路径={ollama.EffectiveModelsPath}（来源：{ollama.ModelsPathSource}）");
+        if (!string.IsNullOrEmpty(ollama.InternalSettingsModelsPath))
+        {
+            Console.WriteLine($"APP内部设置={ollama.InternalSettingsModelsPath}（库文件：{ollama.SettingsDbPath}）");
+        }
         Console.WriteLine($"服务可达={ollama.ServiceRunning} 可提供模型={ollama.ServedModels.Count}");
         Console.WriteLine($"推荐机制={mechanism}：{reason}");
 

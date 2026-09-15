@@ -327,7 +327,7 @@ R1  --policy : 上述四项 Enabled；UninstallLive 与 ForceClean 仍 Unsupport
 
 ```
 dotnet test src/AppAssetSentinel.Tests/AppAssetSentinel.Tests.csproj
-已通过! - 失败: 0，通过: 162，已跳过: 0，总计: 162
+已通过! - 失败: 0，通过: 184，已跳过: 0，总计: 184
 ```
 
 新增/重写的用例覆盖：能力门控、登记原子性与损坏、路径边界（同路径/互相包含/别名/大小写/尾分隔符）、
@@ -673,3 +673,43 @@ None: 79   Embedded: 3   Unknown: 2
 
 独立安装的 Python 被判为「不被任何单一应用拥有」，因此阻止破坏性自动化——这是保守且正确的
 方向：删除它会破坏所有依赖它的软件。
+
+---
+
+## 十、用户指出的关键机制缺陷：APP内部设置必须与系统环境同步重定向（第 21 轮）
+
+用户指出重要真知：**「调整位置的同时应该在APP设置中同时改变数据文件指向，要不然是失效的」**。
+
+### 溯源排查与真实现象
+
+此前排查发现 `D:\AIStack\models\ollama` 会被自动重建一个空目录，当时初步归因为 pwsh 进程环境变量继承。
+在用户提醒下深入分析桌面端运行日志（`app.log`）：
+```
+time=2026-09-16T06:29:36.075+08:00 level=WARN source=server.go:260 msg="models path not accessible, using default" path=D:\AIStack\models\ollama err="GetFileAttributesEx D:\AIStack\models\ollama: The system cannot find the file specified."
+```
+发现 Ollama Windows 桌面客户端（`ollama app.exe`）不仅读取环境变量，**其内部常驻有一套独立的 SQLite 数据库设置**：
+`%LOCALAPPDATA%\Ollama\db.sqlite` 中的 `settings` 表（`models` 字段）。
+
+**如果不改 APP 内部设置的后果：**
+1. 桌面端启动时读取 `db.sqlite`，发现原路径不存在，触发警报并重新建立空目录；
+2. 桌面客户端 GUI 界面（设置页、模型管理页）仍然锁定旧路径，导致图形端与服务层脱节、数据失效！
+
+### 架构级升级与落地实现
+
+1. **引入 SQLite 原生支持**：`AppAssetSentinel.Core` 引入 `Microsoft.Data.Sqlite`。
+2. **适配器 APP 设置接口**：`OllamaAdapter` 新增 `ReadAppSetting` / `UpdateAppSetting` / `RestoreAppSetting`，实现对客户端内部 SQLite 的感知与受控修改。
+3. **内核同步双向修改与回滚**：`MigrationKernel` 扩充 `AppSettingsUpdater` 与 `AppSettingsRestorer` 协议。在切换阶段：
+   - 环境变量变更
+   - **APP 内部设置同步原子更新**
+   - 若任何一步失败或健康检查未通过，**环境配置、APP 内部设置、文件目录全部自动原子回滚**！
+4. **审计全生命周期留痕**：`OperationRecord` 新增 `app_setting_target`、`app_setting_previous_value`、`app_setting_applied_value`，确保真实写入有据可查。
+5. **CLI / 只读探测集成**：`--adapters` 与发现逻辑自动比对环境变量与 APP 设置是否一致，不一致时显式预警。
+
+### 真实机器实测结果
+
+将 `db.sqlite` 中的 `models` 字段同步指向 `D:\AIStack_Vault\models\ollama` 后直接通过桌面端 `ollama app.exe` 启动：
+- `app.log` 中 `models path not accessible` 警告**彻底消失**；
+- `D:\AIStack\models\ollama` **不再被自动重建**；
+- 桌面客户端与后台服务完全一致，4 个模型（39.4 GB）立即可用。
+
+单元测试新增 3 项（覆盖读取、更新、还原、健康检查失败自动回滚），测试总数 181 → **184**。

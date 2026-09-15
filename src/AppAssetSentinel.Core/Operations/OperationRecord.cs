@@ -134,6 +134,18 @@ public sealed class OperationRecord
     [JsonPropertyName("config_applied_value")]
     public string ConfigAppliedValue { get; set; } = string.Empty;
 
+    /// <summary>
+    /// Application internal settings store target (e.g. SQLite db.sqlite -> settings.models, or config file).
+    /// </summary>
+    [JsonPropertyName("app_setting_target")]
+    public string AppSettingTarget { get; set; } = string.Empty;
+
+    [JsonPropertyName("app_setting_previous_value")]
+    public string? AppSettingPreviousValue { get; set; }
+
+    [JsonPropertyName("app_setting_applied_value")]
+    public string AppSettingAppliedValue { get; set; } = string.Empty;
+
     // --- bookkeeping ---
 
     [JsonPropertyName("conflicts")]

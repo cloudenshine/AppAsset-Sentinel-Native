@@ -297,4 +297,145 @@ public class TestOllamaAdapterAndConfigRedirect : IDisposable
             Assert.DoesNotContain("SentinelVaultTest_", realValue);
         }
     }
+
+    // -----------------------------------------------------------------
+    // App Internal Settings (db.sqlite) synchronization & rollback
+    // -----------------------------------------------------------------
+
+    private string CreateTestOllamaDb(string initialModelsPath)
+    {
+        string dbPath = Path.Combine(_root, $"ollama_test_{Guid.NewGuid():N}.sqlite");
+        using var con = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={dbPath}");
+        con.Open();
+        using var cmd = con.CreateCommand();
+        cmd.CommandText = @"
+            CREATE TABLE settings (
+                id INTEGER PRIMARY KEY,
+                models TEXT NOT NULL DEFAULT ''
+            );
+            INSERT INTO settings (id, models) VALUES (1, $models);
+        ";
+        cmd.Parameters.AddWithValue("$models", initialModelsPath);
+        cmd.ExecuteNonQuery();
+        return dbPath;
+    }
+
+    [Fact]
+    public void InternalSettingsDatabaseReadUpdateAndRestoreRoundTripsCorrectly()
+    {
+        string initial = @"D:\Original\Models\Ollama";
+        string updated = @"E:\NewVault\AIStack\Models\Ollama";
+        string dbPath = CreateTestOllamaDb(initial);
+
+        // 1. Read
+        var readResult = OllamaAdapter.ReadAppSetting(dbPath);
+        Assert.True(readResult.Found);
+        Assert.Equal(initial, readResult.ModelsPath);
+
+        // 2. Update
+        var updateResult = OllamaAdapter.UpdateAppSetting(updated, dbPath);
+        Assert.True(updateResult.Success);
+        Assert.Equal(initial, updateResult.PreviousValue);
+
+        var verifyResult = OllamaAdapter.ReadAppSetting(dbPath);
+        Assert.Equal(updated, verifyResult.ModelsPath);
+
+        // 3. Restore
+        var restoreResult = OllamaAdapter.RestoreAppSetting(updateResult.PreviousValue, dbPath);
+        Assert.True(restoreResult.Success);
+
+        var finalResult = OllamaAdapter.ReadAppSetting(dbPath);
+        Assert.Equal(initial, finalResult.ModelsPath);
+    }
+
+    [Fact]
+    public void MigrationKernelSynchronouslyUpdatesAppSettingsAndRecordsThem()
+    {
+        string source = Path.Combine(_root, "src_app_settings");
+        Directory.CreateDirectory(source);
+        File.WriteAllText(Path.Combine(source, "model.bin"), "PAYLOAD");
+        string target = Path.Combine(_root, "vault_app_settings");
+
+        string initialSetting = @"C:\Old\App\Setting\Path";
+        string dbPath = CreateTestOllamaDb(initialSetting);
+
+        var env = new InMemoryEnvironmentStore();
+        env.Set(OllamaAdapter.ConfigurationVariable, source, EnvironmentScope.User);
+
+        var log = new OperationLog(_logDir);
+        var result = MigrationKernel.Execute(_policy, log, new MigrationRequest
+        {
+            SourcePath = source,
+            TargetPath = target,
+            AssetName = "ollama",
+            Category = "ai_models",
+            Mechanism = RelocationMechanism.OfficialConfig,
+            ConfigVariable = OllamaAdapter.ConfigurationVariable,
+            EnvironmentStore = env,
+            AppSettingsUpdater = newPath => OllamaAdapter.UpdateAppSetting(newPath, dbPath),
+            AppSettingsRestorer = prev => OllamaAdapter.RestoreAppSetting(prev, dbPath),
+            HealthCheck = () => env.Get(OllamaAdapter.ConfigurationVariable, EnvironmentScope.User) == target
+        });
+
+        Assert.Equal(OperationStatus.Succeeded, result.Outcome.Status);
+        Assert.True(result.Outcome.DidMutate);
+
+        // Env is updated
+        Assert.Equal(target, env.Get(OllamaAdapter.ConfigurationVariable, EnvironmentScope.User));
+
+        // SQLite DB setting is simultaneously updated
+        var dbCheck = OllamaAdapter.ReadAppSetting(dbPath);
+        Assert.Equal(target, dbCheck.ModelsPath);
+
+        // Operation record recorded the app setting change
+        var record = result.Record!;
+        Assert.Equal("app_internal_settings", record.AppSettingTarget);
+        Assert.Equal(initialSetting, record.AppSettingPreviousValue);
+        Assert.Equal(target, record.AppSettingAppliedValue);
+
+        // Evidence includes the app setting update
+        Assert.Contains(result.Outcome.Evidence, e => e.Contains("APP设置同步更新"));
+    }
+
+    [Fact]
+    public void FailedHealthCheckRollsBackBothEnvironmentVariableAndAppSettings()
+    {
+        string source = Path.Combine(_root, "src_fail_app_settings");
+        Directory.CreateDirectory(source);
+        File.WriteAllText(Path.Combine(source, "model.bin"), "PAYLOAD");
+        string target = Path.Combine(_root, "vault_fail_app_settings");
+
+        string initialSetting = @"C:\Initial\Setting";
+        string dbPath = CreateTestOllamaDb(initialSetting);
+
+        var env = new InMemoryEnvironmentStore();
+        string initialEnv = @"C:\Initial\Env";
+        env.Set(OllamaAdapter.ConfigurationVariable, initialEnv, EnvironmentScope.User);
+
+        var log = new OperationLog(_logDir);
+        var result = MigrationKernel.Execute(_policy, log, new MigrationRequest
+        {
+            SourcePath = source,
+            TargetPath = target,
+            AssetName = "ollama",
+            Category = "ai_models",
+            Mechanism = RelocationMechanism.OfficialConfig,
+            ConfigVariable = OllamaAdapter.ConfigurationVariable,
+            EnvironmentStore = env,
+            AppSettingsUpdater = newPath => OllamaAdapter.UpdateAppSetting(newPath, dbPath),
+            AppSettingsRestorer = prev => OllamaAdapter.RestoreAppSetting(prev, dbPath),
+            HealthCheck = () => false // Simulate health check failure
+        });
+
+        Assert.Equal(OperationStatus.FailedRecoverable, result.Outcome.Status);
+        Assert.False(result.Outcome.DidMutate);
+
+        // Both environment variable AND SQLite DB setting must be cleanly restored
+        Assert.Equal(initialEnv, env.Get(OllamaAdapter.ConfigurationVariable, EnvironmentScope.User));
+        var dbCheck = OllamaAdapter.ReadAppSetting(dbPath);
+        Assert.Equal(initialSetting, dbCheck.ModelsPath);
+
+        // Original directory is intact
+        Assert.True(Directory.Exists(source));
+    }
 }

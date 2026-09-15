@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Microsoft.Data.Sqlite;
 
 namespace AppAssetSentinel.Core.Adapters;
 
@@ -60,6 +61,14 @@ public sealed class OllamaInstance
     /// <summary>Value of OLLAMA_MODELS actually visible to the process, if any.</summary>
     [JsonPropertyName("configured_models_path")]
     public string ConfiguredModelsPath { get; set; } = string.Empty;
+
+    /// <summary>Path to Ollama's internal SQLite database (%LOCALAPPDATA%\Ollama\db.sqlite), if present.</summary>
+    [JsonPropertyName("settings_db_path")]
+    public string SettingsDbPath { get; set; } = string.Empty;
+
+    /// <summary>Value of 'models' stored in Ollama desktop client's internal db.sqlite settings table, if any.</summary>
+    [JsonPropertyName("internal_settings_models_path")]
+    public string InternalSettingsModelsPath { get; set; } = string.Empty;
 
     /// <summary>Directory that really holds manifests/blobs after resolving the above.</summary>
     [JsonPropertyName("effective_models_path")]
@@ -133,8 +142,8 @@ public static class OllamaAdapter
             instance.Notes.Add("未在常见位置找到 ollama 可执行文件。");
         }
 
-        // 2. Effective configuration. A per-user value wins over the process value,
-        //    because that is what a restarted Ollama will actually read.
+        // 2. Effective configuration & Application internal settings.
+        // A per-user value wins over the process value, because that is what a restarted Ollama will actually read.
         string? userValue = ReadEnvironmentVariable(ConfigurationVariable, EnvironmentVariableTarget.User);
         string? processValue = Environment.GetEnvironmentVariable(ConfigurationVariable);
 
@@ -151,6 +160,29 @@ public static class OllamaAdapter
         else
         {
             instance.Notes.Add($"未设置 {ConfigurationVariable}，将使用应用默认位置。");
+        }
+
+        // Check Ollama Windows desktop client internal settings database (db.sqlite)
+        string defaultDb = GetDefaultDbPath();
+        if (File.Exists(defaultDb))
+        {
+            instance.SettingsDbPath = defaultDb;
+            var dbSetting = ReadAppSetting(defaultDb);
+            if (dbSetting.Found && !string.IsNullOrWhiteSpace(dbSetting.ModelsPath))
+            {
+                instance.InternalSettingsModelsPath = dbSetting.ModelsPath!;
+                instance.Notes.Add($"APP内部设置 (db.sqlite)：{instance.InternalSettingsModelsPath}");
+
+                if (string.IsNullOrWhiteSpace(instance.ConfiguredModelsPath))
+                {
+                    instance.ConfiguredModelsPath = instance.InternalSettingsModelsPath;
+                    instance.ModelsPathSource = "APP内部设置 (db.sqlite)";
+                }
+                else if (!string.Equals(instance.ConfiguredModelsPath, instance.InternalSettingsModelsPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    instance.Notes.Add($"[注意] 环境变量 ({instance.ConfiguredModelsPath}) 与 APP内部设置 ({instance.InternalSettingsModelsPath}) 指向不同，迁移时需同步变更，否则客户端可能失效！");
+                }
+            }
         }
 
         // 3. Resolve where the data really is.
@@ -270,8 +302,106 @@ public static class OllamaAdapter
         }
 
         return (RelocationMechanism.OfficialConfig,
-            $"Ollama 官方支持 {ConfigurationVariable} 环境变量，优先修改官方配置，"
-            + "使应用自己知道数据位置；目录联接仅作为无配置支持时的兼容手段。");
+            $"Ollama 官方支持 {ConfigurationVariable} 环境变量与桌面客户端内部设置 (db.sqlite)，优先双向修改官方配置与APP设置，"
+            + "使CLI、服务与GUI桌面端均直接指向新位置；目录联接仅作为无配置支持时的兼容手段。");
+    }
+
+    /// <summary>Default path to Ollama's desktop internal SQLite database.</summary>
+    public static string GetDefaultDbPath() =>
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Ollama", "db.sqlite");
+
+    /// <summary>
+    /// Reads the 'models' path from Ollama's internal SQLite database (%LOCALAPPDATA%\Ollama\db.sqlite).
+    /// </summary>
+    public static (bool Found, string? ModelsPath, string Error) ReadAppSetting(string? dbPath = null)
+    {
+        string path = dbPath ?? GetDefaultDbPath();
+        if (!File.Exists(path)) return (false, null, string.Empty);
+
+        try
+        {
+            using var connection = new SqliteConnection($"Data Source={path};Mode=ReadOnly");
+            connection.Open();
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = "SELECT models FROM settings LIMIT 1;";
+            var result = cmd.ExecuteScalar();
+            if (result != null && result != DBNull.Value)
+            {
+                return (true, result.ToString(), string.Empty);
+            }
+            return (false, null, string.Empty);
+        }
+        catch (Exception ex)
+        {
+            return (false, null, ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// Updates the 'models' path in Ollama's internal SQLite database (%LOCALAPPDATA%\Ollama\db.sqlite).
+    /// Returns previous value so it can be rolled back if migration fails.
+    /// </summary>
+    public static (bool Success, string? PreviousValue, string Error) UpdateAppSetting(string newPath, string? dbPath = null)
+    {
+        string path = dbPath ?? GetDefaultDbPath();
+        if (!File.Exists(path))
+        {
+            return (true, null, string.Empty); // No DB file present (e.g. CLI only install)
+        }
+
+        try
+        {
+            string? prev = null;
+            using (var connection = new SqliteConnection($"Data Source={path}"))
+            {
+                connection.Open();
+                using (var readCmd = connection.CreateCommand())
+                {
+                    readCmd.CommandText = "SELECT models FROM settings LIMIT 1;";
+                    var res = readCmd.ExecuteScalar();
+                    if (res != null && res != DBNull.Value)
+                    {
+                        prev = res.ToString();
+                    }
+                }
+
+                using (var updateCmd = connection.CreateCommand())
+                {
+                    updateCmd.CommandText = "UPDATE settings SET models = $newPath;";
+                    updateCmd.Parameters.AddWithValue("$newPath", newPath);
+                    updateCmd.ExecuteNonQuery();
+                }
+            }
+            return (true, prev, string.Empty);
+        }
+        catch (Exception ex)
+        {
+            return (false, null, ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// Restores the 'models' path in Ollama's internal SQLite database to its previous value.
+    /// </summary>
+    public static (bool Success, string Error) RestoreAppSetting(string? previousValue, string? dbPath = null)
+    {
+        string path = dbPath ?? GetDefaultDbPath();
+        if (!File.Exists(path) || previousValue == null) return (true, string.Empty);
+
+        try
+        {
+            using var connection = new SqliteConnection($"Data Source={path}");
+            connection.Open();
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = "UPDATE settings SET models = $prev;";
+            cmd.Parameters.AddWithValue("$prev", previousValue);
+            cmd.ExecuteNonQuery();
+            return (true, string.Empty);
+        }
+        catch (Exception ex)
+        {
+            return (false, ex.Message);
+        }
     }
 
     private static string? FindExecutable()
