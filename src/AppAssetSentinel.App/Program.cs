@@ -12,6 +12,7 @@ using AppAssetSentinel.Core.Scanner;
 using AppAssetSentinel.Core.Semantic;
 using AppAssetSentinel.Core.Shield;
 using AppAssetSentinel.Core.Migration;
+using AppAssetSentinel.Core.Abstractions;
 using AppAssetSentinel.Core.Adapters;
 using AppAssetSentinel.Core.Operations;
 using AppAssetSentinel.Core.Policy;
@@ -732,15 +733,50 @@ public class Program
 
         app.MapPost("/api/vault/relocate", (RelocateRequest req) =>
         {
-            // AUDIT W07: the confirmed target path is passed through verbatim; the kernel
+            // AUDIT W07/W08: the confirmed target path is passed through verbatim; the kernel
             // enforces boundary, staging exclusivity, per-file verification and conflict
             // preservation, and every step is written to the log before it happens.
+            bool officialConfig = string.Equals(
+                req.Mechanism, "official_config", StringComparison.OrdinalIgnoreCase);
+
+            if (officialConfig && string.IsNullOrWhiteSpace(req.ConfigVariable))
+            {
+                return Results.Ok(OperationOutcome.Failed(Capability.VaultRelocate,
+                    "missing_config_variable",
+                    "选择了官方配置机制但未提供 config_variable；未做任何修改。"));
+            }
+
             var result = MigrationKernel.Execute(_policy, _operationLog, new MigrationRequest
             {
                 SourcePath = req.SourcePath,
                 TargetPath = req.TargetVaultPath,
                 AssetName = req.AssetName,
-                Category = req.Category
+                Category = req.Category,
+                Mechanism = officialConfig
+                    ? RelocationMechanism.OfficialConfig
+                    : RelocationMechanism.JunctionCompat,
+                ConfigVariable = officialConfig ? req.ConfigVariable : string.Empty,
+                EnvironmentStore = officialConfig ? SystemEnvironmentStore.Instance : null,
+
+                // AUDIT W08: the health check is deliberately STRUCTURAL. The consumer is stopped
+                // during the switch, so probing the service here would either hit the stale
+                // instance or fail for the wrong reason. Proving the application actually works
+                // is a separate, explicit step performed after the service is restarted.
+                HealthCheck = officialConfig
+                    ? () =>
+                    {
+                        string? applied = SystemEnvironmentStore.Instance.Get(
+                            req.ConfigVariable, EnvironmentScope.User);
+
+                        if (!string.Equals(applied, req.TargetVaultPath, StringComparison.OrdinalIgnoreCase))
+                        {
+                            return false;
+                        }
+
+                        return Directory.Exists(Path.Combine(req.TargetVaultPath, "manifests"))
+                               || Directory.Exists(Path.Combine(req.TargetVaultPath, "blobs"));
+                    }
+                    : null
             });
 
             return Results.Ok(result.Outcome);
@@ -1032,11 +1068,18 @@ public class Program
 
 public class RelocateRequest
 {
+    /// <summary>"official_config" prefers changing the application's own configuration.</summary>
+    [JsonPropertyName("mechanism")] public string Mechanism { get; set; } = "junction";
+
+    /// <summary>Environment variable the application reads for its data location.</summary>
+    [JsonPropertyName("config_variable")] public string ConfigVariable { get; set; } = string.Empty;
     [JsonPropertyName("source_path")] public string SourcePath { get; set; } = string.Empty;
     [JsonPropertyName("target_vault_path")] public string TargetVaultPath { get; set; } = string.Empty;
     [JsonPropertyName("asset_name")] public string AssetName { get; set; } = string.Empty;
     [JsonPropertyName("category")] public string Category { get; set; } = "ai_models";
 }
+
+
 
 public class CommitRequest
 {

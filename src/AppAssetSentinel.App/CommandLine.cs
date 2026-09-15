@@ -176,6 +176,8 @@ public static class CommandLine
                     size_bytes = a.EstimatedSizeBytes,
                     size_complete = a.SizeMeasurementComplete,
                     install_location = a.InstallLocation,
+                    python_relationship = a.PythonRelationship,
+                    python_runtime_owned = a.PythonRuntimeOwned,
                     is_protected = a.IsProtected
                 })
         };

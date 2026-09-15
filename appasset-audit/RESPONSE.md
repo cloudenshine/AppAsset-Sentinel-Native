@@ -602,3 +602,74 @@ sentinel_vault_relocate        → isError=true，以策略原因拒绝，且从
 site-packages）判定，**没有区分「应用自带 Python 运行时」与「依赖外部指定的 Python」**。
 这两者语义不同：前者是应用自身的一部分，后者是共享依赖、应用并不拥有它。混淆可能导致
 要么误保护、要么误判定可清理。留待后续轮次处理。
+---
+
+## 九、维护窗口：真实模型库迁移（第 20 轮）
+
+**在用户明确授权下**，对真实 Ollama 模型库执行了一次完整迁移。这是 W08 最后一条验收
+「已存在模型迁移后可列出**并推理**」的实证。
+
+### 执行
+
+```
+源      D:\AIStack\models\ollama（39.4 GB）
+目标    D:\AIStack_Vault\models\ollama
+机制    official_config（改官方配置，非目录联接）
+前置    Ollama 已停止；源存在；目标卷空间 >= 2.2x 载荷
+
+内核返回  Succeeded / switched_via_config        7.1 分钟
+处理规模  18 文件 / 42,306,746,301 字节
+校验      逐文件 SHA-256（源 → 暂存 → 源稳定性复检）
+```
+
+### 迁移后真实应用验证
+
+| 项目 | 结果 |
+|---|---|
+| `ollama list` | 4 个模型全部列出（14 / 10 / 10 / 7.6 GB） |
+| **实际推理** | ✅ 成功，12.3 秒，`eval_count=5` |
+| 配置 | `OLLAMA_MODELS = D:\AIStack_Vault\models\ollama` |
+| 目标数据 | 39.4 GB，manifests=4 blobs=13 |
+| 源备份 | `D:\AIStack\models\ollama.sentinel-backup-task_8dd22406b114`，39.4 GB，**保留中** |
+| 操作记录 | `state=Switched` `disposition=Retained` |
+
+### 目标位置的选择（有意的偏离）
+
+审计建议在**隔离账户 + 两个测试卷**上验收。实际执行用的是**真实账户与真实数据**，并且目标
+仍在同一块 NVMe 上，**没有**迁到机械盘——因为那会永久拖慢模型加载，而跨卷能力已在第 12 轮
+用真实清单验证过。因此：
+
+- **更强**：真实数据、真实应用、真实推理，而非模拟
+- **不同**：未使用隔离账户；未跨卷（跨卷已单独验证）
+- **代价**：迁移期间 Ollama 停机约 8 分钟；源备份暂占额外 39.4 GB
+
+### 过程中两次失败，均如实记录
+
+1. **第一次尝试未完成**：使用 `Start-Job`，随父进程退出而终止——**工具生命周期问题，不是内核
+   缺陷**。事后核对为零副作用（源完好、目标未创建、配置未变、无备份残留）。这顺带验证了
+   「中断不留半成品」。
+2. **出现过一个空目录**：`D:\AIStack\models\ollama` 被 Ollama 自身重新创建（0 文件）。
+   原因是启动 Ollama 的会话中存在**陈旧的进程级环境变量**，子进程继承了它，Ollama 于是在
+   旧路径建了空目录。**不是迁移产生的**，已清理。
+
+### 遗留
+
+源备份 39.4 GB **保留中**——这是设计如此：空间回收是独立且受授权的步骤
+（`POST /api/vault/commit`），不会随切换自动发生。回收量以卷可用空间差值为证据报告。
+
+### 同轮修复的接线缺陷
+
+`PythonRuntimeDetector`（第 19 轮）的调用被放在了 `EnhanceWithDynamicIntelligence` 的
+**提前 return 之后**，因此对已有规则画像的应用**从不执行**，84 项全部显示默认值。
+已移至方法开头——运行时归属是安装的客观事实，不应被画像短路跳过。
+
+修复后真实机器结果：
+
+```
+None: 79   Embedded: 3   Unknown: 2
+[Embedded] BleachBit-Portable / NVIDIA CUDA Toolkit 13.3 / Ollama（owned=True）
+[Unknown]  Python 3.12.10 (64-bit) / Python Launcher（owned=False）
+```
+
+独立安装的 Python 被判为「不被任何单一应用拥有」，因此阻止破坏性自动化——这是保守且正确的
+方向：删除它会破坏所有依赖它的软件。

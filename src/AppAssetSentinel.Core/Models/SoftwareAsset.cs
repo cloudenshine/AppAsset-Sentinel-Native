@@ -100,6 +100,17 @@ public class SoftwareAsset
     /// confirmed = observed live activity; inferred = indirect file evidence;
     /// unknown = nothing was observed, which must never be reported as "abandoned".
     /// </summary>
+    /// <summary>
+    /// AUDIT W05: how this application relates to Python. Embedded means it owns the runtime;
+    /// ExternalShared means the runtime belongs to other software too. Collapsing the two into a
+    /// single "uses python" flag would let a shared runtime be treated as this app's residue.
+    /// </summary>
+    [JsonPropertyName("python_relationship")]
+    public string PythonRelationship { get; set; } = "none";
+
+    [JsonPropertyName("python_runtime_owned")]
+    public bool PythonRuntimeOwned { get; set; }
+
     [JsonPropertyName("usage_confidence")]
     public string UsageConfidence { get; set; } = "unknown";
 

@@ -17,6 +17,13 @@ public static class DynamicAssetIntelligence
 
     public static void EnhanceWithDynamicIntelligence(SoftwareAsset app)
     {
+        // AUDIT W05: how this application relates to Python is a fact about the installation,
+        // so it is recorded before any curated-profile shortcut can return early.
+        var pythonFinding = PythonRuntimeDetector.Detect(
+            app.InstallLocation, app.MainExecutable, app.DisplayName);
+        app.PythonRelationship = pythonFinding.Relationship.ToString();
+        app.PythonRuntimeOwned = pythonFinding.RuntimeOwnedByApplication;
+
         // If already has high-precision curated rule from semantic DB, only fill missing blanks
         bool hasCuratedRole = !string.IsNullOrEmpty(app.PlainRole) && !app.PlainRole.Contains("官方发布的 Windows 桌面应用程序");
         bool hasCuratedUsage = !string.IsNullOrEmpty(app.CoreUsage) && !app.CoreUsage.Contains("专属业务功能支持");
