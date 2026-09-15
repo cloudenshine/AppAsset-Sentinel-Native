@@ -11,7 +11,7 @@
 | 发布门槛 | 状态 | 说明 |
 |---|---|---|
 | **R0 安全观察版** | ✅ 已完成 | W01、W02、W03 全部达成验收；W04 关键项达成（A13/A14/A16/A17/A22）。 |
-| **R1 可信迁移（协议层）** | 🟡 部分完成 | W06 写前日志与统一写门控、W07 迁移内核已完成并通过 16 项新测试。**W08 Ollama 专用适配器与隔离双卷真应用验收未完成**，因此 R1 档位需显式 `--profile=r1` 才启用。 |
+| **R1 可信迁移（协议层）** | 🟡 协议完成，环境验收未跑 | W06 写前日志、W07 迁移内核、**W08 Ollama 适配器（官方配置优先）**均已完成。**跨卷迁移与真实"停→迁→重启→推理"验收未运行**，需隔离账户 + 两个测试卷，因此 R1 档位需显式 `--profile=r1`。 |
 | R2 资产关系版 | ⏳ 未开始 | W09 漂移诊断已可用（只诊断），W10 第二适配器未开始。 |
 | R3 发布与 Agent 接入版 | ⏳ 未开始 | 尚未提供完整自包含 ZIP 与空目录离线启动验收。 |
 
@@ -168,13 +168,58 @@ read through anchor: FAKE-WEIGHTS-2MB
 
 默认档位仍为 R0：`POST /api/vault/relocate` → `Blocked`。
 
-### W08–W12 —— ⏳ 未实施
+### W08 / P1 Ollama 专用适配器 —— ✅ 完成（协议层）
 
-- **W08 Ollama 专用适配器**：未实现。优先改官方配置、Junction 降级为兼容措施、
-  迁移后「可列出并推理」的真应用探针均未做。
-- **W09 冲突保全漂移修复**：未实现，漂移保持只诊断。
+新增 `Core/Adapters/OllamaAdapter.cs`。**审计纠正了机制顺序**：应优先修改应用自身支持的
+官方配置，文件系统重定向只作为经过评估的兼容手段——因为 Junction 对应用隐瞒了真相，
+且会被应用自己的更新器切断（A06）。
+
+适配器能力：
+- 发现可执行文件、版本、服务可达性、**有效**模型路径，以及该路径的来源
+  （用户变量 / 进程变量 / 应用默认）；
+- 盘点 manifests / blobs 与总字节数，作为"数据确实存在"的证据；
+- 探测运行中的服务实际愿意提供哪些模型；
+- 置信度由证据推导（Confirmed / Inferred / Unknown），**未知即 Unsupported**，不做尽力而为；
+- `ChooseMechanism()` 优先 `OfficialConfig` 并说明为何 Junction 是妥协。
+
+内核扩展（W07）：
+- `MigrationRequest` 增加 `Mechanism / ConfigVariable / IEnvironmentStore / HealthCheck`，
+  测试永不写入真实用户环境变量；
+- 新增官方配置切换路径：停放源目录 → 修改配置 → **要求消费端健康检查通过**；
+  失败则同时回滚配置值与原目录。
+
+**通过测试发现的真实顺序缺陷**：机制前置条件原本在"切换"阶段校验，也就是在数据**已经发布之后**。
+现已移入 preflight，无法满足的请求不会再移动任何字节。
+
+**真机只读验证（真实 Ollama）**
+
+```
+found=True  confidence=Confirmed  version='ollama version is 0.34.0'
+models_path=D:\AIStack\models\ollama  source='用户环境变量 OLLAMA_MODELS'
+manifests=4  blobs=13  bytes=42306743403  served_models=4
+mechanism=OfficialConfig
+relocation_enabled=False   # 默认仍是 R0
+```
+
+只读接口：`GET /api/adapters/ollama`，响应中显式列出哪些验收已做、哪些未做。
+
+### W09 / P1 漂移诊断与冲突保全修复 —— ✅ 完成（计划层）
+
+新增 `Core/Operations/DriftRepairPlanner.cs`：
+
+- **逐路径分类**：Identical / AnchorOnly / VaultOnly / **Conflicting**。
+- **冲突绝不自动合并**：同名不同内容时两侧都保留，产出可供人工比对的 sidecar 命名建议
+  （由内容哈希派生，重复运行幂等）。
+- **不按时间戳取舍**：审计的反例（时间戳相同、内容不同 → 丢一侧；锚点更新 → 覆盖仓库侧）
+  已有专门测试锁定，两处都断言**两侧数据均未被改动**。
+- **离线卷不是可清理残留**：目标卷不可访问时只报告"先恢复该卷"，不触碰锚点数据。
+- **配置偏离**作为独立、具名的原因（`DescribeConfigDeviation`），覆盖 A19。
+- **诊断不杜撰原因**：报告与建议中不出现"软件升级导致"这类未经证明的归因。
+
+### W10–W12 —— ⏳ 未实施
+
 - **W10** HF/Docker 只读适配器：未实现。
-- **W11** UI 异步化：未实现。
+- **W11** UI 异步化（先显示缓存、真实 readiness）：未实现。
 - **W12** 完整自包含 ZIP 与空目录离线启动验收：未实现。
 
 ### R1 档位的开放条件
@@ -190,7 +235,7 @@ read through anchor: FAKE-WEIGHTS-2MB
 
 ```
 dotnet test src/AppAssetSentinel.Tests/AppAssetSentinel.Tests.csproj
-已通过! - 失败: 0，通过: 85，已跳过: 0，总计: 85
+已通过! - 失败: 0，通过: 102，已跳过: 0，总计: 102
 ```
 
 新增/重写的用例覆盖：能力门控、登记原子性与损坏、路径边界（同路径/互相包含/别名/大小写/尾分隔符）、
@@ -201,6 +246,7 @@ Origin/Host/令牌、路径 HTML 属性往返、恶意标记转义、计划身�
 **明确未运行（不计为通过）**
 
 - 真实跨卷 NTFS 迁移验收（需两个隔离测试卷）。
+- 真实应用"停止 → 迁移 → 重启 → 推理可用"验收（需隔离账户）。
 - 隔离 Windows 账户/VM 中的真应用探针（Ollama 迁移后推理可用性）。
 - UAC 提权与系统还原点的真实创建结果。
 - 发布物在**空目录、离线、普通账户**下的启动验收。
