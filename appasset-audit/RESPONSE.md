@@ -363,11 +363,46 @@ README 中「双向锁死防漂移、一键平移、自动愈合、彻底卸载�
 
 ---
 
-## 六、下一步（按审计顺序）
+## 六、真实应用配置重定向验收（R1 最后一块证据）
 
-1. **W06/W07**：迁移内核——任务专属 staging、源稳定性与逐文件校验、冲突保全、
-   写前日志与幂等状态机、`Commit` 与备份回收分离、`unlink` 与 `recover` 拆分。
-2. **W08**：只做 Ollama 一个适配器，优先改官方配置，Junction 降级为兼容措施；
-   在隔离账户 + 两个测试卷上完成「迁移后可列出并推理」的真应用验收。
-3. **W09**：冲突保全的漂移修复（两版本隔离 + 哈希证据），在此之前维持只诊断。
-4. **W11/W12**：UI 先显示缓存并异步扫描、真实 readiness；提供完整自包含 ZIP 与离线启动验收。
+`scripts/Test-OllamaConfigRedirect.ps1` 用一个**临时的真实 Ollama 实例**验证 W08 选择的
+「官方配置优先」机制：该实例的 `OLLAMA_MODELS` 指向一个经联接重定向的位置，模型库是用户真实的存储。
+
+安全属性（脚本内逐条断言，而非口头保证）：
+
+- 不修改用户级或机器级 `OLLAMA_MODELS`；
+- 不重启、不停止用户正在运行的服务；
+- 只在子进程内重定向，并用一个未占用端口启动**第二个**临时实例；
+- 通过临时联接读取真实库，不复制、不删除任何生产字节。
+
+```
+用户级 OLLAMA_MODELS（运行前）：D:\AIStack\models\ollama
+重定向路径（联接）：…\Temp\sentinel_ollama_redirect_a15bf007\models -> D:\AIStack\models\ollama
+
+[验收] 重定向后的实例可提供的模型：
+  - hf.co/huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF:UD-Q3_K_XL
+  - hf.co/huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF:UD-Q2_K_XL
+  - qwen3.5-defiant:q8_0
+  - huihui_ai/gemma-4-abliterated:12b-qat
+  合计：4 个
+
+用户级 OLLAMA_MODELS（运行后）：D:\AIStack\models\ollama
+用户配置未被修改：True
+重定向路径残留：False
+用户原有服务仍在提供 4 个模型（未受影响）
+```
+
+**证明了什么**：真实 Ollama 确实读取 `OLLAMA_MODELS`，并能在重定向后的位置加载并列出真实模型
+——W08 选择「改官方配置而非建联接」的机制成立，且不需要让应用对数据位置一无所知。
+
+**没有证明什么**（不计为通过）：对用户真实存储执行一次完整的「停机 → 迁移 → 重启 → 推理」
+尚未运行。机制已被真实应用验证，但搬动用户的真实数据属于需要用户在场的维护窗口操作。
+
+---
+
+## 七、下一步（按审计顺序）
+
+1. 对用户真实存储执行一次完整的维护窗口迁移演练（需用户在场），验证 `ollama` 推理可用。
+2. `RestorePointCreate` 在提权环境下的真实创建验收。
+3. `.NET 10 LTS` 迁移（需先验证 Photino 打包兼容）。
+4. WebView2 渲染实机检查、MCP 接入面、二进制签名与依赖漏洞扫描。
