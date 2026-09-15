@@ -46,6 +46,14 @@ public sealed class RecoveryAssessment
     [JsonPropertyName("log_matches_disk")]
     public bool LogMatchesDisk { get; set; }
 
+    /// <summary>
+    /// AUDIT W06: a logged state is a status, not a layout. NeedsAttention is emitted by several
+    /// paths whose disk layouts differ, so for those the log alone cannot determine the state and
+    /// the disk observation is authoritative. This is false in exactly those cases.
+    /// </summary>
+    [JsonPropertyName("log_decides")]
+    public bool LogDecides { get; set; }
+
     [JsonPropertyName("conclusion")]
     public string Conclusion { get; set; } = string.Empty;
 
@@ -107,26 +115,50 @@ public static class RecoveryInspector
             : ObservedLayout.Unrecognised;
 
         assessment.DataAccountedFor = sourceIsRealDir || backupExists || (sourceIsLink && targetPopulated);
-        assessment.LogMatchesDisk = ExpectedLayout(record.State) == assessment.ObservedLayout;
+        var expected = ExpectedLayout(record.State);
 
-        assessment.Conclusion = assessment.LogMatchesDisk
-            ? $"记录状态 {record.State} 与磁盘布局一致，可以据此继续。"
-            : $"记录显示 {record.State}，但磁盘实际为 {assessment.ObservedLayout}——"
-              + "说明进程在记录某一步之后、执行该步之前被终止。以磁盘为准。";
+        if (expected.HasValue)
+        {
+            assessment.LogDecides = true;
+            assessment.LogMatchesDisk = expected.Value == assessment.ObservedLayout;
+        }
+        else
+        {
+            // Ambiguous state: report the observation and refuse to claim the log is decisive.
+            assessment.LogDecides = false;
+            assessment.LogMatchesDisk = false;
+        }
+
+        assessment.Conclusion = !assessment.LogDecides
+            ? $"记录状态为 {record.State}，该状态可能由多条路径产生，日志本身不能决定磁盘布局。"
+              + $"磁盘实测为 {assessment.ObservedLayout}，以磁盘为准。"
+            : assessment.LogMatchesDisk
+                ? $"记录状态 {record.State} 与磁盘布局一致，可以据此继续。"
+                : $"记录显示 {record.State}，但磁盘实际为 {assessment.ObservedLayout}——"
+                  + "说明进程在记录某一步之后、执行该步之前被终止。以磁盘为准。";
 
         assessment.SafeNextActions = SuggestActions(record, assessment);
         return assessment;
     }
 
-    private static ObservedLayout ExpectedLayout(OperationState state) => state switch
+    /// <summary>
+    /// The layout a state corresponds to, or null when the state is reachable from more than one
+    /// path and therefore does not determine a layout on its own.
+    /// </summary>
+    private static ObservedLayout? ExpectedLayout(OperationState state) => state switch
     {
         OperationState.Planned or OperationState.PreflightFailed or OperationState.Copying
             or OperationState.Copied or OperationState.VerifyFailed or OperationState.Verified
             or OperationState.FailedRecoverable => ObservedLayout.OriginalIntact,
 
-        OperationState.Switched or OperationState.NeedsAttention => ObservedLayout.SwitchedWithBackup,
+        // Reachable from a confirmed switch AND from "switch unverified", but also from the
+        // conflict and target-occupied paths, which leave the source as a real directory. Not
+        // single-valued, so the log is not treated as decisive here.
+        OperationState.NeedsAttention => null,
+
+        OperationState.Switched => ObservedLayout.SwitchedWithBackup,
         OperationState.Committed => ObservedLayout.SwitchedCommitted,
-        _ => ObservedLayout.Unrecognised
+        _ => null
     };
 
     private static List<string> SuggestActions(OperationRecord record, RecoveryAssessment assessment)
