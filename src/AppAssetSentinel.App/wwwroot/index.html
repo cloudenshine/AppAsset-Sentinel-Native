@@ -985,7 +985,7 @@
                   <button type="button"
                           class="js-relocate px-2.5 py-1.5 bg-purple-950/80 hover:bg-purple-900 text-purple-200 border border-purple-700/60 text-xs font-semibold rounded-lg transition flex items-center space-x-1 shadow-sm"
                           data-src="${escAttr(app.install_location)}"
-                          data-dst="D:\\AIStack_Vault\\apps"
+                          data-dst=""
                           data-name="${escAttr(app.display_name)}"
                           data-domain="heavy_app"
                           data-reason="${isZh ? '检测到软件体积超过 500MB，可在支持写入后评估平移。' : 'Asset exceeds 500MB; relocation can be evaluated once writes are enabled.'}">
@@ -1202,7 +1202,9 @@
       document.getElementById('modal-relocate').classList.remove('hidden');
       document.getElementById('relocate-modal-title').innerText = isZh ? `归仓配置: ${assetName}` : `Vault Relocation: ${assetName}`;
       document.getElementById('relocate-src-input').value = sourcePath;
-      document.getElementById('relocate-dst-input').value = recommendedTarget;
+      const defaultVol = cachedVolumes.find(v => !v.is_system) || cachedVolumes[0];
+      const fallbackTarget = defaultVol ? `${defaultVol.drive_letter}:\\AppVault\\Apps\\${assetName}` : `C:\\AppVault\\Apps\\${assetName}`;
+      document.getElementById('relocate-dst-input').value = recommendedTarget || fallbackTarget;
 
       const reason = decodeURIComponent(encodedReason || '');
       document.getElementById('relocate-tiering-advice').innerText = reason || (isZh ? '系统将无损迁移数据，并在原地建立透明 NTFS 目录联接与环境变量同步锁定。' : 'System will atomically relocate data and create a transparent NTFS Junction link.');
@@ -1232,7 +1234,7 @@
       if (currentDst.length >= 2 && currentDst[1] === ':') {
         document.getElementById('relocate-dst-input').value = driveLetter + currentDst.substring(1);
       } else {
-        document.getElementById('relocate-dst-input').value = `${driveLetter}:\\AIStack_Vault\\${pendingRelocateData?.assetName || 'asset'}`;
+        document.getElementById('relocate-dst-input').value = `${driveLetter}:\\AppVault\\${pendingRelocateData?.assetName || 'asset'}`;
       }
     }
 

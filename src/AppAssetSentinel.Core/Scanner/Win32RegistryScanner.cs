@@ -8,12 +8,33 @@ namespace AppAssetSentinel.Core.Scanner;
 [SupportedOSPlatform("windows")]
 public class Win32RegistryScanner
 {
-    public static readonly string[] DefaultPortableRoots =
+    /// <summary>
+    /// Dynamically discover standard portable software folders across all ready fixed drives.
+    /// Never hardcodes private machine paths.
+    /// </summary>
+    public static List<string> GetDefaultPortableRoots()
     {
-        @"D:\AIStack\tools",
-        @"D:\Tools",
-        @"D:\Programs"
-    };
+        var roots = new List<string> { @"C:\Tools", @"C:\PortableApps", @"C:\Programs" };
+        try
+        {
+            foreach (var drive in DriveInfo.GetDrives())
+            {
+                if (drive.IsReady && drive.DriveType == DriveType.Fixed)
+                {
+                    foreach (var folder in new[] { "Tools", "PortableApps", "Programs" })
+                    {
+                        string p = Path.Combine(drive.RootDirectory.FullName, folder);
+                        if (Directory.Exists(p) && !roots.Contains(p, StringComparer.OrdinalIgnoreCase))
+                        {
+                            roots.Add(p);
+                        }
+                    }
+                }
+            }
+        }
+        catch { }
+        return roots;
+    }
 
     public static readonly HashSet<string> IgnoredPortableSubdirs = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -248,7 +269,7 @@ public class Win32RegistryScanner
     {
         var results = new List<SoftwareAsset>();
 
-        foreach (var rootDir in DefaultPortableRoots)
+        foreach (var rootDir in GetDefaultPortableRoots())
         {
             if (!Directory.Exists(rootDir)) continue;
 

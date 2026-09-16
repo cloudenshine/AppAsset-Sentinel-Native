@@ -71,10 +71,18 @@ public static class MultiDomainAssetScanner
         // -------------------------------------------------------------
         // DOMAIN 1: AI大模型权重与向量库 (AI Models Vault)
         // -------------------------------------------------------------
-        AddIfPresent(candidates, seenPaths, activeRegs,
-            "Ollama 本地大模型权重库", "ai_models", "AI大模型权重",
-            @"D:\AIStack\models\ollama",
-            "包含 GGUF/Safetensors 大模型物理权重文件，提供本地推理算力");
+        try
+        {
+            var ollama = Adapters.OllamaAdapter.Discover();
+            if (ollama.Found && !string.IsNullOrWhiteSpace(ollama.EffectiveModelsPath))
+            {
+                AddIfPresent(candidates, seenPaths, activeRegs,
+                    "Ollama 活跃模型权重库", "ai_models", "AI大模型权重",
+                    ollama.EffectiveModelsPath,
+                    "包含 GGUF/Safetensors 大模型物理权重文件，提供本地推理算力");
+            }
+        }
+        catch { }
 
         AddIfPresent(candidates, seenPaths, activeRegs,
             "Ollama C盘默认模型库", "ai_models", "AI大模型权重",
@@ -85,11 +93,6 @@ public static class MultiDomainAssetScanner
             "HuggingFace 权重 Hub 缓存", "ai_models", "AI大模型权重",
             Path.Combine(UserProfile, @".cache\huggingface\hub"),
             "通过 Python transformers/diffusers 下载的开源大模型权重集合");
-
-        AddIfPresent(candidates, seenPaths, activeRegs,
-            "ComfyUI 核心模型与权重", "ai_models", "AI大模型权重",
-            @"D:\Tools\ComfyUI\models",
-            "Stable Diffusion、Flux Checkpoint、LoRA 与 VAE 大模型权重库");
 
         // -------------------------------------------------------------
         // DOMAIN 2: 社交与办公通讯资料归档 (Social & Communication Vault)
@@ -141,14 +144,19 @@ public static class MultiDomainAssetScanner
             "Android Studio 手机模拟器虚拟机完整磁盘镜像文件");
 
         AddIfPresent(candidates, seenPaths, activeRegs,
-            "uv / pip 全局编译缓存", "dev_containers", "容器虚拟盘",
+            "uv 全局编译缓存", "dev_containers", "容器虚拟盘",
             Path.Combine(LocalAppData, @"uv\cache"),
             "Python 高速包管理器预编译 Wheel 包与二进制缓存");
 
         AddIfPresent(candidates, seenPaths, activeRegs,
             "npm 全局模块离线缓存", "dev_containers", "容器虚拟盘",
-            @"D:\AIStack\tools\npm-cache",
+            Path.Combine(AppData, "npm-cache"),
             "Node.js 全局安装与开发构建过程中缓存的 npm 依赖包");
+
+        AddIfPresent(candidates, seenPaths, activeRegs,
+            "pip 全局构建缓存", "dev_containers", "容器虚拟盘",
+            Path.Combine(LocalAppData, @"pip\cache"),
+            "Python pip 包安装与构建缓存目录");
 
         return candidates.OrderByDescending(c => c.SizeBytes).ToList();
     }

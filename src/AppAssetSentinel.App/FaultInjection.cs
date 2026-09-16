@@ -19,8 +19,7 @@ public static class FaultInjection
 {
     private static readonly string[] ForbiddenFragments =
     {
-        @"\AIStack\", @"\.ollama", @"\Users\", @"\AppData\", @"\Program Files",
-        @"\Windows\", "\\.cache", "\\huggingface"
+        @"Windows", @"System32", @"Program Files", @"Users", @"AppData"
     };
 
     public static int Run(string[] args, CapabilityPolicy policy)

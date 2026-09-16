@@ -38,7 +38,7 @@ public class MigrationCandidate
     public string Description { get; set; } = string.Empty;
 
     [JsonPropertyName("recommended_target")]
-    public string RecommendedTarget { get; set; } = @"D:\AIStack\migrated_assets";
+    public string RecommendedTarget { get; set; } = string.Empty;
 }
 
 public static class MigrationCandidateScanner
@@ -48,17 +48,31 @@ public static class MigrationCandidateScanner
         var results = new List<MigrationCandidate>();
         var seenPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        // 1. Well-known AI and Large Data paths
+        // 1. Standard AI and Development Cache paths
+        var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+
         var knownTargets = new List<(string Name, string Path, string Category, string Desc)>
         {
-            ("Ollama 本地大模型权重库", @"D:\AIStack\models\ollama", "ai_model", "包含 GGUF/Safetensors 大模型权重，占用海量存储"),
-            ("Ollama 默认 C 盘权重库", Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), @".ollama\models"), "ai_model", "Ollama 在 C 盘默认下载存储的大模型文件"),
-            ("HuggingFace 本地模型缓存", Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), @".cache\huggingface\hub"), "ai_model", "通过 transformers / diffusers 下载的开源模型权重"),
-            ("Docker Desktop WSL2 虚拟磁盘", Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"Docker\wsl\data\ext4.vhdx"), "docker_disk", "Docker 容器镜像与数据卷虚拟硬盘文件"),
-            ("ComfyUI 权重与模型目录", @"D:\Tools\ComfyUI\models", "ai_model", "Stable Diffusion / Flux Checkpoint 与 LoRA 权重库"),
-            ("uv / pip 全局编译缓存", Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"uv\cache"), "dev_cache", "Python 包管理器构建缓存与 Wheel 文件"),
-            ("npm 全局模块缓存", @"D:\AIStack\tools\npm-cache", "dev_cache", "Node.js npm 全局下载包缓存")
+            ("Ollama C盘默认权重库", Path.Combine(userProfile, @".ollama\models"), "ai_model", "Ollama 在 C 盘默认下载存储的大模型文件"),
+            ("HuggingFace 本地模型缓存", Path.Combine(userProfile, @".cache\huggingface\hub"), "ai_model", "HuggingFace Hub 下载的开源模型权重"),
+            ("Docker Desktop WSL2 虚拟磁盘", Path.Combine(localAppData, @"Docker\wsl\data\ext4.vhdx"), "docker_disk", "Docker 容器镜像与数据卷虚拟硬盘文件"),
+            ("uv 全局编译缓存", Path.Combine(localAppData, @"uv\cache"), "dev_cache", "uv 包管理器构建缓存与 Wheel 文件"),
+            ("npm 全局模块缓存", Path.Combine(appData, @"npm-cache"), "dev_cache", "Node.js npm 全局下载包缓存"),
+            ("pip 全局缓存", Path.Combine(localAppData, @"pip\cache"), "dev_cache", "Python pip 构建与下载缓存")
         };
+
+        // Dynamically add Ollama's active models path if configured and distinct
+        try
+        {
+            var ollama = Adapters.OllamaAdapter.Discover();
+            if (ollama.Found && !string.IsNullOrWhiteSpace(ollama.EffectiveModelsPath))
+            {
+                knownTargets.Insert(0, ("Ollama 活跃模型权重库", ollama.EffectiveModelsPath, "ai_model", "Ollama 当前生效的大模型物理权重库"));
+            }
+        }
+        catch { }
 
         foreach (var (name, path, cat, desc) in knownTargets)
         {
@@ -91,7 +105,8 @@ public static class MigrationCandidateScanner
                         SizeBytes = size,
                         SizeFormatted = sizeStr,
                         Drive = drive.TrimEnd('\\'),
-                        Description = desc
+                        Description = desc,
+                        RecommendedTarget = VolumeManager.RecommendVaultPath(cat, name)
                     });
                 }
             }
@@ -122,7 +137,8 @@ public static class MigrationCandidateScanner
                         SizeBytes = app.EstimatedSizeBytes,
                         SizeFormatted = sizeStr,
                         Drive = drive.TrimEnd('\\'),
-                        Description = $"{app.Publisher} · 占用 {sizeStr} 存储空间"
+                        Description = $"{app.Publisher} · 占用 {sizeStr} 存储空间",
+                        RecommendedTarget = VolumeManager.RecommendVaultPath("heavy_app", app.DisplayName)
                     });
                 }
             }

@@ -82,7 +82,7 @@ public class TestMigrationKernelAndOperationLog : IDisposable
         Directory.CreateDirectory(source);
         File.WriteAllText(Path.Combine(source, "blob.bin"), "weights");
 
-        string requested = Path.Combine(_root, "AIStack_Vault", "models", "ollama");
+        string requested = Path.Combine(_root, "AppVault", "models", "ollama");
 
         var log = new OperationLog(_logDir);
         var result = MigrationKernel.Execute(_policy, log, new MigrationRequest
@@ -100,7 +100,7 @@ public class TestMigrationKernelAndOperationLog : IDisposable
         Assert.True(File.Exists(Path.Combine(requested, "blob.bin")));
 
         // And no double-leaf artefact was produced.
-        Assert.False(Directory.Exists(Path.Combine(_root, "AIStack_Vault", "models", "models")));
+        Assert.False(Directory.Exists(Path.Combine(_root, "AppVault", "models", "models")));
     }
 
     // -----------------------------------------------------------------

@@ -11,11 +11,21 @@
 
 [CmdletBinding()]
 param(
-    [string]$RealModels = 'D:\AIStack\models\ollama',
+    [string]$RealModels = '',
     [int]$TestPort = 11499
 )
 
 $ErrorActionPreference = 'Stop'
+
+if ([string]::IsNullOrWhiteSpace($RealModels)) {
+    $RealModels = [Environment]::GetEnvironmentVariable('OLLAMA_MODELS', 'User')
+    if ([string]::IsNullOrWhiteSpace($RealModels) -or -not (Test-Path $RealModels)) {
+        $RealModels = [Environment]::GetEnvironmentVariable('OLLAMA_MODELS')
+    }
+    if ([string]::IsNullOrWhiteSpace($RealModels) -or -not (Test-Path $RealModels)) {
+        $RealModels = Join-Path $env:USERPROFILE '.ollama\models'
+    }
+}
 
 $runId = [guid]::NewGuid().ToString('N').Substring(0, 8)
 $redirectRoot = Join-Path $env:TEMP "sentinel_ollama_redirect_$runId"

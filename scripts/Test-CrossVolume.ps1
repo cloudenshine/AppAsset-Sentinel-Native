@@ -8,11 +8,22 @@
 
 [CmdletBinding()]
 param(
-    [string]$SourceDrive = 'D',
-    [string]$TargetDrive = 'E'
+    [string]$SourceDrive = '',
+    [string]$TargetDrive = ''
 )
 
 $ErrorActionPreference = 'Stop'
+
+if ([string]::IsNullOrWhiteSpace($SourceDrive) -or [string]::IsNullOrWhiteSpace($TargetDrive)) {
+    $vols = @(Get-Volume | Where-Object { $_.DriveLetter -and $_.DriveType -eq 'Fixed' } | Sort-Object SizeRemaining -Descending)
+    if ($vols.Count -ge 2) {
+        if ([string]::IsNullOrWhiteSpace($SourceDrive)) { $SourceDrive = $vols[0].DriveLetter }
+        if ([string]::IsNullOrWhiteSpace($TargetDrive)) { $TargetDrive = $vols[1].DriveLetter }
+    } else {
+        if ([string]::IsNullOrWhiteSpace($SourceDrive)) { $SourceDrive = 'C' }
+        if ([string]::IsNullOrWhiteSpace($TargetDrive)) { $TargetDrive = 'C' }
+    }
+}
 
 $runId = [guid]::NewGuid().ToString('N').Substring(0, 8)
 $sourceRoot = "${SourceDrive}:\_sentinel_xvol_src_$runId"

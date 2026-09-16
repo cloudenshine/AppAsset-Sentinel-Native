@@ -9,14 +9,36 @@
 
 [CmdletBinding()]
 param(
-    [string]$RealModels = 'D:\AIStack\models\ollama',
-    [string]$SourceDrive = 'D',
-    [string]$TargetDrive = 'E',
+    [string]$RealModels = '',
+    [string]$SourceDrive = '',
+    [string]$TargetDrive = '',
     [string]$ExePath = 'dist/AppAssetSentinel.App.exe',
     [int]$TestPort = 11498
 )
 
 $ErrorActionPreference = 'Stop'
+
+if ([string]::IsNullOrWhiteSpace($RealModels)) {
+    $RealModels = [Environment]::GetEnvironmentVariable('OLLAMA_MODELS', 'User')
+    if ([string]::IsNullOrWhiteSpace($RealModels) -or -not (Test-Path $RealModels)) {
+        $RealModels = [Environment]::GetEnvironmentVariable('OLLAMA_MODELS')
+    }
+    if ([string]::IsNullOrWhiteSpace($RealModels) -or -not (Test-Path $RealModels)) {
+        $RealModels = Join-Path $env:USERPROFILE '.ollama\models'
+    }
+}
+
+# Dynamically pick drives if not explicitly passed
+if ([string]::IsNullOrWhiteSpace($SourceDrive) -or [string]::IsNullOrWhiteSpace($TargetDrive)) {
+    $fixedDrives = @(Get-Volume | Where-Object { $_.DriveLetter -and $_.DriveType -eq 'Fixed' } | Sort-Object SizeRemaining -Descending)
+    if ($fixedDrives.Count -ge 2) {
+        if ([string]::IsNullOrWhiteSpace($SourceDrive)) { $SourceDrive = $fixedDrives[0].DriveLetter }
+        if ([string]::IsNullOrWhiteSpace($TargetDrive)) { $TargetDrive = $fixedDrives[1].DriveLetter }
+    } else {
+        if ([string]::IsNullOrWhiteSpace($SourceDrive)) { $SourceDrive = 'C' }
+        if ([string]::IsNullOrWhiteSpace($TargetDrive)) { $TargetDrive = 'C' }
+    }
+}
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $exe = if ([IO.Path]::IsPathRooted($ExePath)) { $ExePath } else { Join-Path $repoRoot $ExePath }
 if (-not (Test-Path $exe)) { throw "not found: $exe" }

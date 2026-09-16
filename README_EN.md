@@ -35,7 +35,7 @@ Traditional uninstallers (born in the legacy PC era) fail critically when dealin
 **AppAsset Sentinel Native** solves this through 4 engineered pillars:
 
 1. **📋 Multi-Source Inventory & Objective Telemetry**: 6-tier evidence harvesting across processes, services, shortcuts, AppData files, and executable timestamps.
-2. **🚀 Multi-Volume Asset Vault & Dual-Lock Anti-Drift**: Detects **NVMe SSD vs SATA HDD** hardware media types. Relocates heavy assets via Windows kernel-level **NTFS Junctions** with environment variable synchronization, supported by an auto-healing **Drift Watchdog**.
+2. **🚀 Multi-Volume Asset Vault & Anti-Drift**: Automatically detects physical storage volumes and available capacity. Relocates heavy assets via official configuration / app settings synchronization or transparent NTFS Junctions, supported by an evidence-preserving **Drift Watchdog**.
 3. **🛡️ DAG Dependency Shield & Decoupled Rules**: Static DLL/binary snooping without human intervention, combined with 100% externalized JSON rules that can be hot-reloaded dynamically.
 4. **🧯 Safety Fuse & Snapshot Vault**: Hardcoded critical directory protection (`C:\Windows`, `System32`), System Restore Point triggers, and zero-permission instant registry `.reg` backup vaults.
 
