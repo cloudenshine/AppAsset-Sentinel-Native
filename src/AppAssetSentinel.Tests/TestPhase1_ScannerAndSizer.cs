@@ -39,7 +39,10 @@ public class TestPhase1_ScannerAndSizer : IDisposable
         foreach (var app in apps.Take(10))
         {
             Assert.False(string.IsNullOrWhiteSpace(app.DisplayName));
-            Assert.False(string.IsNullOrWhiteSpace(app.RegistryKeyPath));
+            if (!app.IsPortable)
+            {
+                Assert.False(string.IsNullOrWhiteSpace(app.RegistryKeyPath));
+            }
             Assert.Contains(app.Architecture, new[] { "x64", "x86" });
         }
     }
